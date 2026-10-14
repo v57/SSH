@@ -143,7 +143,7 @@ public struct SSHKey: Sendable {
       switch self {
       case .unrecognized: "This doesn't look like an SSH private key."
       case .encrypted:
-        "This key is protected by a passphrase, which Database Pro can't read yet. Remove the passphrase with `ssh-keygen -p -f <key>`, or create a new key in Database Pro."
+        "This key is protected by a passphrase, which Database can't read yet. Remove the passphrase with `ssh-keygen -p -f <key>`, or create a new key in Database."
       case .unsupportedType(let type): "\(type) keys aren't supported. Use an Ed25519, ECDSA or RSA key."
       }
     }
