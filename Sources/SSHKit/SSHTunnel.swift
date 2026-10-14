@@ -1,6 +1,7 @@
 import CLibssh2
 import Darwin
 import Foundation
+import WireKit
 
 /// Where and how to log in over SSH.
 public struct SSHServer: Sendable, Hashable {
@@ -59,29 +60,24 @@ public enum SSHTunnelError: Error, LocalizedError, Sendable, Equatable {
   }
 }
 
-/// A local port forward (`ssh -L 127.0.0.1:<random>:target:port`) over one SSH login.
+/// One SSH login whose `direct-tcpip` channels carry database connections (`dialer`): `ssh -L`, without the local
+/// port. Nothing listens on this device, so other apps and users can't reach the database through the tunnel.
 ///
-/// libssh2 isn't thread-safe per session, so one dedicated thread owns the session
-/// and every channel; a second thread only accepts local connections.
+/// libssh2 isn't thread-safe per session, so one dedicated thread owns the session and every channel.
 public final class SSHTunnel: @unchecked Sendable {
   public let server: SSHServer
-  public let targetHost: String
-  public let targetPort: Int
-  public private(set) var localPort = 0
   public private(set) var hostKeyFingerprint = ""
   public private(set) var hostKeyType = ""
 
   private let lock = NSLock()
   private var running = true
-  private var pendingFDs: [Int32] = []
-  private var listenFD: Int32 = -1
-  private var wakePipe: [Int32] = [-1, -1]
   private var closeReason: String?
   private var closedHandlers: [@Sendable (String?) -> Void] = []
 
   private var session: OpaquePointer?
   private var socketFD: Int32 = -1
-  private var tunnels: [Tunnel] = []
+  private let waker: PollWaker
+  private let streams: SSHChannelStreams
 
   static let eagain = Int32(LIBSSH2_ERROR_EAGAIN)
 
@@ -90,18 +86,17 @@ public final class SSHTunnel: @unchecked Sendable {
     return true
   }()
 
-  private init(server: SSHServer, targetHost: String, targetPort: Int) {
+  private init(server: SSHServer) {
     self.server = server
-    self.targetHost = targetHost
-    self.targetPort = targetPort
+    let waker = PollWaker()
+    self.waker = waker
+    streams = SSHChannelStreams { waker.wake() }
   }
 
-  /// Logs in and starts listening on 127.0.0.1 at a free port.
-  public static func open(
-    server: SSHServer, targetHost: String, targetPort: Int, timeout: TimeInterval = 20
-  ) async throws -> SSHTunnel {
+  /// Logs in.
+  public static func open(server: SSHServer, timeout: TimeInterval = 20) async throws -> SSHTunnel {
     _ = initialized
-    let tunnel = SSHTunnel(server: server, targetHost: targetHost, targetPort: targetPort)
+    let tunnel = SSHTunnel(server: server)
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       let thread = Thread { tunnel.run(timeout: timeout, ready: continuation) }
       thread.name = "SSHTunnel \(server.host)"
@@ -109,6 +104,15 @@ public final class SSHTunnel: @unchecked Sendable {
       thread.start()
     }
     return tunnel
+  }
+
+  /// Connections through the tunnel, each on its own channel: `host` is as the SSH server sees it ("127.0.0.1" is
+  /// the server itself).
+  public var dialer: WireDialer { streams.dialer }
+
+  /// A stream to `host:port` through the tunnel.
+  public func open(host: String, port: Int, timeout: TimeInterval = 15) async throws -> WireChannel {
+    try await streams.open(host: host, port: port, timeout: timeout)
   }
 
   public var isAlive: Bool {
@@ -142,24 +146,11 @@ public final class SSHTunnel: @unchecked Sendable {
     }
     running = false
     closeReason = reason
-    let fd = listenFD
-    listenFD = -1
     let handlers = closedHandlers
     closedHandlers = []
     lock.unlock()
-    if fd >= 0 {
-      Darwin.shutdown(fd, SHUT_RDWR)
-      Darwin.close(fd)
-    }
-    wake()
+    waker.wake()
     for handler in handlers { handler(reason) }
-  }
-
-  private func wake() {
-    if wakePipe[1] >= 0 {
-      var byte: UInt8 = 1
-      _ = Darwin.write(wakePipe[1], &byte, 1)
-    }
   }
 
   // MARK: - Owner thread
@@ -211,17 +202,6 @@ public final class SSHTunnel: @unchecked Sendable {
 
     try authenticate(sess, deadline: deadline)
     libssh2_keepalive_config(sess, 1, 30)
-
-    // Local listener.
-    let (fd, port) = try Self.listen()
-    listenFD = fd
-    localPort = port
-    if pipe(&wakePipe) == 0 {
-      for end in wakePipe { _ = fcntl(end, F_SETFL, fcntl(end, F_GETFL) | O_NONBLOCK) }
-    }
-    let acceptThread = Thread { [weak self] in self?.acceptLoop(fd: fd) }
-    acceptThread.name = "SSHTunnel accept"
-    acceptThread.start()
   }
 
   private func authenticate(_ sess: OpaquePointer, deadline: Date) throws {
@@ -286,24 +266,10 @@ public final class SSHTunnel: @unchecked Sendable {
     guard let sess = session else { return }
     var lastKeepalive = Date()
     while isAlive {
-      // 1. Channels for newly accepted connections.
-      lock.lock()
-      let fresh = pendingFDs
-      pendingFDs.removeAll()
-      lock.unlock()
-      for fd in fresh {
-        if let channel = openChannel(sess) {
-          tunnels.append(Tunnel(channel: channel, fd: fd))
-        } else {
-          Darwin.close(fd)
-        }
-      }
+      // 1. Open the channels asked for, and move bytes.
+      streams.pump(session: sess)
 
-      // 2. Move bytes.
-      for tunnel in tunnels where !tunnel.closed { bridge(tunnel) }
-      tunnels.removeAll { $0.closed }
-
-      // 3. Keepalive, and notice a dead transport.
+      // 2. Keepalive, and notice a dead transport.
       if Date().timeIntervalSince(lastKeepalive) > 5 {
         var next: Int32 = 0
         let rc = libssh2_keepalive_send(sess, &next)
@@ -318,25 +284,19 @@ public final class SSHTunnel: @unchecked Sendable {
         break
       }
 
-      // 4. Sleep until something happens.
+      // 3. Sleep until the server sends something or the app does.
       var fds: [pollfd] = [pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)]
-      if tunnels.contains(where: { !$0.toChannel.isEmpty }) || libssh2_session_block_directions(sess) & LIBSSH2_SESSION_BLOCK_OUTBOUND != 0 {
+      if streams.wantsSocketOut || libssh2_session_block_directions(sess) & LIBSSH2_SESSION_BLOCK_OUTBOUND != 0 {
         fds[0].events |= Int16(POLLOUT)
       }
-      if wakePipe[0] >= 0 { fds.append(pollfd(fd: wakePipe[0], events: Int16(POLLIN), revents: 0)) }
-      for tunnel in tunnels where !tunnel.localEOF {
-        var events = Int16(POLLIN)
-        if !tunnel.toLocal.isEmpty { events |= Int16(POLLOUT) }
-        fds.append(pollfd(fd: tunnel.fd, events: events, revents: 0))
-      }
+      if waker.fd >= 0 { fds.append(pollfd(fd: waker.fd, events: Int16(POLLIN), revents: 0)) }
       _ = poll(&fds, nfds_t(fds.count), 200)
-      if wakePipe[0] >= 0 {
-        var sink = [UInt8](repeating: 0, count: 64)
-        while Darwin.read(wakePipe[0], &sink, sink.count) > 0 {}
-      }
+      waker.drain()
     }
-    for tunnel in tunnels { closeTunnel(tunnel) }
-    tunnels.removeAll()
+    lock.lock()
+    let reason = closeReason ?? SSHTunnelError.closed.localizedDescription
+    lock.unlock()
+    streams.closeAll(reason: reason)
   }
 
   private func isTransportDead(_ sess: OpaquePointer) -> Bool {
@@ -345,148 +305,9 @@ public final class SSHTunnel: @unchecked Sendable {
       || errno == LIBSSH2_ERROR_SOCKET_SEND
   }
 
-  private func openChannel(_ sess: OpaquePointer) -> OpaquePointer? {
-    let deadline = Date().addingTimeInterval(15)
-    while Date() < deadline {
-      let channel = targetHost.withCString { host in
-        libssh2_channel_direct_tcpip_ex(sess, host, Int32(targetPort), "127.0.0.1", 0)
-      }
-      if let channel { return channel }
-      if libssh2_session_last_errno(sess) != Self.eagain { return nil }
-      waitSocket(sess)
-    }
-    return nil
-  }
-
-  // MARK: Byte bridging
-
-  private final class Tunnel {
-    let channel: OpaquePointer
-    var fd: Int32
-    var toChannel: [UInt8] = []
-    var toLocal: [UInt8] = []
-    var localEOF = false
-    var channelEOF = false
-    var closed = false
-
-    init(channel: OpaquePointer, fd: Int32) {
-      self.channel = channel
-      self.fd = fd
-    }
-  }
-
-  private func bridge(_ tunnel: Tunnel) {
-    var buffer = [UInt8](repeating: 0, count: 32 * 1024)
-    // Remote → local.
-    while !tunnel.channelEOF && tunnel.toLocal.count < 1 << 20 {
-      let n = buffer.withUnsafeMutableBufferPointer { pointer in
-        pointer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: pointer.count) {
-          libssh2_channel_read_ex(tunnel.channel, 0, $0, pointer.count)
-        }
-      }
-      if n > 0 {
-        tunnel.toLocal += buffer[0..<Int(n)]
-      } else if n == 0 {
-        if libssh2_channel_eof(tunnel.channel) == 1 { tunnel.channelEOF = true }
-        break
-      } else {
-        if Int32(n) != Self.eagain { tunnel.channelEOF = true }
-        break
-      }
-    }
-    if !tunnel.toLocal.isEmpty {
-      let written = tunnel.toLocal.withUnsafeBytes { Darwin.write(tunnel.fd, $0.baseAddress, $0.count) }
-      if written > 0 {
-        tunnel.toLocal.removeFirst(written)
-      } else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
-        closeTunnel(tunnel)
-        return
-      }
-    }
-    // Local → remote.
-    if !tunnel.localEOF && tunnel.toChannel.count < 1 << 20 {
-      let n = buffer.withUnsafeMutableBytes { Darwin.recv(tunnel.fd, $0.baseAddress, $0.count, 0) }
-      if n > 0 {
-        tunnel.toChannel += buffer[0..<n]
-      } else if n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK) {
-        tunnel.localEOF = true
-      }
-    }
-    while !tunnel.toChannel.isEmpty {
-      let written = tunnel.toChannel.withUnsafeBufferPointer { pointer in
-        pointer.baseAddress!.withMemoryRebound(to: CChar.self, capacity: pointer.count) {
-          libssh2_channel_write_ex(tunnel.channel, 0, $0, pointer.count)
-        }
-      }
-      if written > 0 {
-        tunnel.toChannel.removeFirst(Int(written))
-      } else if Int32(written) == Self.eagain {
-        break
-      } else {
-        closeTunnel(tunnel)
-        return
-      }
-    }
-    if tunnel.localEOF && tunnel.toChannel.isEmpty { _ = libssh2_channel_send_eof(tunnel.channel) }
-    if tunnel.channelEOF && tunnel.toLocal.isEmpty {
-      if tunnel.localEOF {
-        closeTunnel(tunnel)
-      } else {
-        Darwin.shutdown(tunnel.fd, SHUT_WR)
-        // The remote side is done; when the local side hangs up too, the tunnel ends.
-        tunnel.localEOF = tunnel.localEOF || isPeerClosed(tunnel.fd)
-        if tunnel.localEOF { closeTunnel(tunnel) }
-      }
-    }
-  }
-
-  private func isPeerClosed(_ fd: Int32) -> Bool {
-    var probe: UInt8 = 0
-    let n = Darwin.recv(fd, &probe, 1, MSG_PEEK)
-    return n == 0
-  }
-
-  private func closeTunnel(_ tunnel: Tunnel) {
-    guard !tunnel.closed else { return }
-    tunnel.closed = true
-    _ = libssh2_channel_close(tunnel.channel)
-    _ = libssh2_channel_free(tunnel.channel)
-    if tunnel.fd >= 0 {
-      Darwin.close(tunnel.fd)
-      tunnel.fd = -1
-    }
-  }
-
-  // MARK: Accept thread
-
-  private func acceptLoop(fd: Int32) {
-    while isAlive {
-      let client = Darwin.accept(fd, nil, nil)
-      if client < 0 {
-        if errno == EINTR { continue }
-        break
-      }
-      _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) | O_NONBLOCK)
-      var one: Int32 = 1
-      setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
-      setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-      lock.lock()
-      pendingFDs.append(client)
-      lock.unlock()
-      wake()
-    }
-  }
-
   // MARK: Teardown
 
   private func teardown() {
-    for tunnel in tunnels { closeTunnel(tunnel) }
-    tunnels.removeAll()
-    lock.lock()
-    let leftovers = pendingFDs
-    pendingFDs.removeAll()
-    lock.unlock()
-    for fd in leftovers { Darwin.close(fd) }
     if let sess = session {
       libssh2_session_set_blocking(sess, 1)
       _ = libssh2_session_disconnect_ex(sess, SSH_DISCONNECT_BY_APPLICATION, "Closing tunnel", "")
@@ -497,8 +318,7 @@ public final class SSHTunnel: @unchecked Sendable {
       Darwin.close(socketFD)
       socketFD = -1
     }
-    for end in wakePipe where end >= 0 { Darwin.close(end) }
-    wakePipe = [-1, -1]
+    waker.close()
   }
 
   // MARK: Helpers
@@ -579,30 +399,6 @@ public final class SSHTunnel: @unchecked Sendable {
       Darwin.close(fd)
     }
     throw SSHTunnelError.connectFailed(lastError)
-  }
-
-  static func listen() throws -> (Int32, Int) {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
-    guard fd >= 0 else { throw SSHTunnelError.forwardFailed("no socket") }
-    var one: Int32 = 1
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_addr.s_addr = inet_addr("127.0.0.1")
-    address.sin_port = 0
-    let bound = withUnsafePointer(to: &address) {
-      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-    }
-    guard bound == 0, Darwin.listen(fd, 32) == 0 else {
-      Darwin.close(fd)
-      throw SSHTunnelError.forwardFailed("couldn't listen locally")
-    }
-    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-    _ = withUnsafeMutablePointer(to: &address) {
-      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
-    }
-    return (fd, Int(UInt16(bigEndian: address.sin_port)))
   }
 }
 
