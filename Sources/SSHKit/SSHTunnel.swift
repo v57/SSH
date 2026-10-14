@@ -26,7 +26,8 @@ public struct SSHServer: Sendable, Hashable {
 
   public static func == (a: SSHServer, b: SSHServer) -> Bool {
     a.host == b.host && a.port == b.port && a.user == b.user && a.password == b.password
-      && a.key?.privateBytes == b.key?.privateBytes && a.knownFingerprint == b.knownFingerprint
+      && a.key?.privateBytes == b.key?.privateBytes
+      && (try? a.key?.publicKeyBlob()) == (try? b.key?.publicKeyBlob()) && a.knownFingerprint == b.knownFingerprint
   }
 
   public func hash(into hasher: inout Hasher) {

@@ -26,15 +26,34 @@ public struct SSHKey: Sendable {
 
   public let kind: Kind
   /// Raw private key material: the 32-byte seed for Ed25519, the scalar for ECDSA,
-  /// PKCS#1 DER for RSA.
+  /// PKCS#1 DER for RSA. Empty for a key held elsewhere (`external`).
   public let privateBytes: [UInt8]
   public var comment: String
+  /// A key whose private part never reaches the app, like a Secure Enclave key: its public
+  /// blob, and a function that signs (returning the signature body libssh2 expects).
+  public let external: External?
+
+  public struct External: Sendable {
+    public let publicKeyBlob: [UInt8]
+    public let sign: @Sendable ([UInt8]) throws -> [UInt8]
+  }
 
   public init(kind: Kind, privateBytes: [UInt8], comment: String = "") throws {
     self.kind = kind
     self.privateBytes = privateBytes
     self.comment = comment
+    external = nil
     _ = try publicKeyBlob()  // validates the material
+  }
+
+  /// A key held elsewhere: `publicKeyBlob` in SSH wire format, `sign` producing the signature body.
+  public init(
+    kind: Kind, publicKeyBlob: [UInt8], comment: String = "", sign: @escaping @Sendable ([UInt8]) throws -> [UInt8]
+  ) {
+    self.kind = kind
+    privateBytes = []
+    self.comment = comment
+    external = External(publicKeyBlob: publicKeyBlob, sign: sign)
   }
 
   /// A new Ed25519 key.
@@ -46,6 +65,7 @@ public struct SSHKey: Sendable {
   // MARK: Public key
 
   public func publicKeyBlob() throws -> [UInt8] {
+    if let external { return external.publicKeyBlob }
     var w = ByteWriter()
     SSHWire.string(&w, Array(kind.rawValue.utf8))
     switch kind {
@@ -86,6 +106,7 @@ public struct SSHKey: Sendable {
 
   /// The signature body libssh2 expects from its sign callback (no algorithm name).
   public func sign(_ data: [UInt8]) throws -> [UInt8] {
+    if let external { return try external.sign(data) }
     switch kind {
     case .ed25519:
       return Array(try Curve25519.Signing.PrivateKey(rawRepresentation: privateBytes).signature(for: data))
