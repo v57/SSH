@@ -171,7 +171,11 @@ public final class SSHTunnel: @unchecked Sendable {
   }
 
   private func setUp(timeout: TimeInterval) throws {
-    socketFD = try Sockets.connect(host: server.host, port: server.port, timeout: timeout)
+    do {
+      socketFD = try Sockets.connect(host: server.host, port: server.port, timeout: timeout)
+    } catch {
+      throw SSHTunnelError.connectFailed(Self.describe(error, host: server.host))
+    }
     guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {
       throw SSHTunnelError.handshakeFailed("couldn't start an SSH session")
     }
@@ -347,6 +351,14 @@ public final class SSHTunnel: @unchecked Sendable {
     var length: Int32 = 0
     _ = libssh2_session_last_error(session, &message, &length, 0)
     return message.map { String(cString: $0) } ?? "unknown error"
+  }
+
+  static func describe(_ error: SocketError, host: String) -> String {
+    switch error {
+    case .hostNotFound: "the host name \(host) couldn't be found"
+    case .timedOut: "timed out"
+    case .failed(let code, let message): code == Sockets.connectionRefused ? "connection refused (is SSH on?)" : message
+    }
   }
 
   static func hostKeyTypeName(_ type: Int32) -> String {
