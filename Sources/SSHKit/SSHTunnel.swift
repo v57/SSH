@@ -1,5 +1,4 @@
 import CLibssh2
-import Darwin
 import Foundation
 import WireKit
 
@@ -75,7 +74,7 @@ public final class SSHTunnel: @unchecked Sendable {
   private var closedHandlers: [@Sendable (String?) -> Void] = []
 
   private var session: OpaquePointer?
-  private var socketFD: Int32 = -1
+  private var socketFD: SocketHandle = Sockets.invalid
   private let waker: PollWaker
   private let streams: SSHChannelStreams
 
@@ -172,7 +171,7 @@ public final class SSHTunnel: @unchecked Sendable {
   }
 
   private func setUp(timeout: TimeInterval) throws {
-    socketFD = try Self.connectSocket(host: server.host, port: server.port, timeout: timeout)
+    socketFD = try Sockets.connect(host: server.host, port: server.port, timeout: timeout)
     guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {
       throw SSHTunnelError.handshakeFailed("couldn't start an SSH session")
     }
@@ -285,12 +284,12 @@ public final class SSHTunnel: @unchecked Sendable {
       }
 
       // 3. Sleep until the server sends something or the app does.
-      var fds: [pollfd] = [pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)]
+      var fds = [Sockets.descriptor(socketFD, events: Sockets.readable)]
       if streams.wantsSocketOut || libssh2_session_block_directions(sess) & LIBSSH2_SESSION_BLOCK_OUTBOUND != 0 {
-        fds[0].events |= Int16(POLLOUT)
+        fds[0].events |= Sockets.writable
       }
-      if waker.fd >= 0 { fds.append(pollfd(fd: waker.fd, events: Int16(POLLIN), revents: 0)) }
-      _ = poll(&fds, nfds_t(fds.count), 200)
+      if waker.isValid { fds.append(Sockets.descriptor(waker.fd, events: Sockets.readable)) }
+      Sockets.poll(&fds, milliseconds: 200)
       waker.drain()
     }
     lock.lock()
@@ -314,9 +313,9 @@ public final class SSHTunnel: @unchecked Sendable {
       libssh2_session_free(sess)
       session = nil
     }
-    if socketFD >= 0 {
-      Darwin.close(socketFD)
-      socketFD = -1
+    if socketFD != Sockets.invalid {
+      Sockets.close(socketFD)
+      socketFD = Sockets.invalid
     }
     waker.close()
   }
@@ -336,10 +335,10 @@ public final class SSHTunnel: @unchecked Sendable {
   private func waitSocket(_ sess: OpaquePointer) {
     let directions = libssh2_session_block_directions(sess)
     var events: Int16 = 0
-    if directions & LIBSSH2_SESSION_BLOCK_INBOUND != 0 { events |= Int16(POLLIN) }
-    if directions & LIBSSH2_SESSION_BLOCK_OUTBOUND != 0 { events |= Int16(POLLOUT) }
-    var pfd = pollfd(fd: socketFD, events: events == 0 ? Int16(POLLIN) : events, revents: 0)
-    _ = poll(&pfd, 1, 100)
+    if directions & LIBSSH2_SESSION_BLOCK_INBOUND != 0 { events |= Sockets.readable }
+    if directions & LIBSSH2_SESSION_BLOCK_OUTBOUND != 0 { events |= Sockets.writable }
+    var descriptors = [Sockets.descriptor(socketFD, events: events == 0 ? Sockets.readable : events)]
+    Sockets.poll(&descriptors, milliseconds: 100)
   }
 
   private func lastError() -> String {
@@ -359,46 +358,6 @@ public final class SSHTunnel: @unchecked Sendable {
     case LIBSSH2_HOSTKEY_TYPE_ED25519: "Ed25519"
     default: "unknown"
     }
-  }
-
-  static func connectSocket(host: String, port: Int, timeout: TimeInterval) throws -> Int32 {
-    var hints = addrinfo()
-    hints.ai_family = AF_UNSPEC
-    hints.ai_socktype = SOCK_STREAM
-    var info: UnsafeMutablePointer<addrinfo>?
-    let rc = getaddrinfo(host, String(port), &hints, &info)
-    guard rc == 0, let first = info else {
-      throw SSHTunnelError.connectFailed("the host name \(host) couldn't be found")
-    }
-    defer { freeaddrinfo(first) }
-    var lastError = "nothing answered"
-    var candidate: UnsafeMutablePointer<addrinfo>? = first
-    while let address = candidate {
-      candidate = address.pointee.ai_next
-      let fd = socket(address.pointee.ai_family, address.pointee.ai_socktype, address.pointee.ai_protocol)
-      if fd < 0 { continue }
-      var one: Int32 = 1
-      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
-      setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-      _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
-      if connect(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0 { return fd }
-      if errno == EINPROGRESS {
-        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        if poll(&pfd, 1, Int32(timeout * 1000)) > 0 {
-          var error: Int32 = 0
-          var length = socklen_t(MemoryLayout<Int32>.size)
-          getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length)
-          if error == 0 { return fd }
-          lastError = error == ECONNREFUSED ? "connection refused (is SSH on?)" : String(cString: strerror(error))
-        } else {
-          lastError = "timed out"
-        }
-      } else {
-        lastError = String(cString: strerror(errno))
-      }
-      Darwin.close(fd)
-    }
-    throw SSHTunnelError.connectFailed(lastError)
   }
 }
 

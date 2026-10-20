@@ -1,0 +1,9 @@
+module CLibssh2 {
+    header "libssh2.h"
+    header "libssh2_publickey.h"
+    header "libssh2_sftp.h"
+    link "bcrypt"
+    link "crypt32"
+    link "ws2_32"
+    export *
+}

@@ -1,6 +1,10 @@
 import CryptoKit
 import Foundation
-import Security
+#if canImport(Security)
+  import Security
+#else
+  import _CryptoExtras
+#endif
 import WireKit
 
 /// A private key for SSH public-key login. Signing happens in Swift (CryptoKit /
@@ -286,8 +290,9 @@ enum SSHWire {
   }
 }
 
-/// RSA through Security.framework, with the key held as PKCS#1 DER.
+/// RSA through Security.framework (swift-crypto's `_RSA` elsewhere), with the key held as PKCS#1 DER.
 enum SSHRSA {
+#if canImport(Security)
   static func secKey(_ pkcs1: [UInt8]) throws -> SecKey {
     let attributes: [String: Any] = [
       kSecAttrKeyType as String: kSecAttrKeyTypeRSA, kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
@@ -298,6 +303,7 @@ enum SSHRSA {
     }
     return key
   }
+#endif
 
   static func publicNumbers(pkcs1: [UInt8]) throws -> (n: [UInt8], e: [UInt8]) {
     var r = ByteReader(pkcs1)
@@ -308,12 +314,23 @@ enum SSHRSA {
   }
 
   static func signSHA256(pkcs1: [UInt8], data: [UInt8]) throws -> [UInt8] {
-    var error: Unmanaged<CFError>?
-    guard
-      let signature = SecKeyCreateSignature(
-        try secKey(pkcs1), .rsaSignatureMessagePKCS1v15SHA256, Data(data) as CFData, &error)
-    else { throw WireError.authenticationFailed("RSA signing failed") }
-    return [UInt8](signature as Data)
+    #if canImport(Security)
+      var error: Unmanaged<CFError>?
+      guard
+        let signature = SecKeyCreateSignature(
+          try secKey(pkcs1), .rsaSignatureMessagePKCS1v15SHA256, Data(data) as CFData, &error)
+      else { throw WireError.authenticationFailed("RSA signing failed") }
+      return [UInt8](signature as Data)
+    #else
+      guard let key = try? _RSA.Signing.PrivateKey(unsafeDERRepresentation: pkcs1) else {
+        throw SSHKey.ImportError.unrecognized
+      }
+      do {
+        return [UInt8](try key.signature(for: Data(data), padding: .insecurePKCS1v1_5).rawRepresentation)
+      } catch {
+        throw WireError.authenticationFailed("RSA signing failed")
+      }
+    #endif
   }
 
   /// Builds PKCS#1 RSAPrivateKey, computing d mod (p-1) and d mod (q-1).

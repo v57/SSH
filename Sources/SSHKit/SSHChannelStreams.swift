@@ -1,5 +1,4 @@
 import CLibssh2
-import Darwin
 import Foundation
 import WireKit
 
@@ -192,50 +191,4 @@ public final class SSHChannelStreams: @unchecked Sendable {
       self.pipe = pipe
     }
   }
-}
-
-/// A pipe that wakes a thread sleeping in `poll`: add `fd` to its poll set, call `wake` from any thread, and `drain`
-/// after waking.
-public final class PollWaker: @unchecked Sendable {
-  private let lock = NSLock()
-  private var ends: [Int32] = [-1, -1]
-
-  public init() {
-    if pipe(&ends) == 0 {
-      for end in ends { _ = fcntl(end, F_SETFL, fcntl(end, F_GETFL) | O_NONBLOCK) }
-    } else {
-      ends = [-1, -1]
-    }
-  }
-
-  /// The end to poll for reading (-1 if the pipe couldn't be made).
-  public var fd: Int32 {
-    lock.lock()
-    defer { lock.unlock() }
-    return ends[0]
-  }
-
-  public func wake() {
-    lock.lock()
-    defer { lock.unlock() }
-    guard ends[1] >= 0 else { return }
-    var byte: UInt8 = 1
-    _ = Darwin.write(ends[1], &byte, 1)
-  }
-
-  public func drain() {
-    let fd = self.fd
-    guard fd >= 0 else { return }
-    var sink = [UInt8](repeating: 0, count: 64)
-    while Darwin.read(fd, &sink, sink.count) > 0 {}
-  }
-
-  public func close() {
-    lock.lock()
-    defer { lock.unlock() }
-    for end in ends where end >= 0 { Darwin.close(end) }
-    ends = [-1, -1]
-  }
-
-  deinit { close() }
 }
