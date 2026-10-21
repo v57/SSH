@@ -162,32 +162,116 @@ public struct SSHKey: Sendable {
     }
   }
 
-  /// Reads an OpenSSH (`BEGIN OPENSSH PRIVATE KEY`) or PEM private key.
+  /// Reads an OpenSSH (`BEGIN OPENSSH PRIVATE KEY`) or PEM private key: PKCS#1 RSA (`BEGIN RSA PRIVATE KEY`), SEC1
+  /// ECDSA (`BEGIN EC PRIVATE KEY`, as `ssh-keygen -m PEM` and `openssl ecparam -genkey` write it, with a named curve
+  /// or explicit parameters), or PKCS#8 (`BEGIN PRIVATE KEY`: ECDSA, RSA or Ed25519). Blocks around the key, such as
+  /// `openssl ecparam`'s `BEGIN EC PARAMETERS`, are skipped.
   public init(importing text: String) throws {
     let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-    guard let begin = lines.first(where: { $0.hasPrefix("-----BEGIN ") }) else { throw ImportError.unrecognized }
-    if text.contains("Proc-Type: 4,ENCRYPTED") || begin.contains("ENCRYPTED") { throw ImportError.encrypted }
-    let body = lines.filter { !$0.hasPrefix("-----") && !$0.contains(":") }.joined()
+    guard
+      let start = lines.firstIndex(where: { $0.hasPrefix("-----BEGIN ") && $0.hasSuffix("PRIVATE KEY-----") })
+    else {
+      throw ImportError.unrecognized
+    }
+    let begin = lines[start]
+    let end = lines[start...].firstIndex { $0.hasPrefix("-----END ") } ?? lines.endIndex
+    let block = lines[(start + 1)..<end]
+    if block.contains(where: { $0.hasPrefix("Proc-Type: 4,ENCRYPTED") }) || begin.contains("ENCRYPTED") {
+      throw ImportError.encrypted
+    }
+    let body = block.filter { !$0.contains(":") }.joined()
     guard let der = Data(base64Encoded: body).map({ [UInt8]($0) }) else { throw ImportError.unrecognized }
     switch begin {
     case "-----BEGIN OPENSSH PRIVATE KEY-----": self = try Self.parseOpenSSH(der)
     case "-----BEGIN RSA PRIVATE KEY-----": self = try SSHKey(kind: .rsa, privateBytes: der)
-    case "-----BEGIN EC PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----":
-      let pem = text
-      if let key = try? P256.Signing.PrivateKey(pemRepresentation: pem) {
-        self = try SSHKey(kind: .ecdsaP256, privateBytes: Array(key.rawRepresentation))
-      } else if let key = try? P384.Signing.PrivateKey(pemRepresentation: pem) {
-        self = try SSHKey(kind: .ecdsaP384, privateBytes: Array(key.rawRepresentation))
-      } else if let key = try? P521.Signing.PrivateKey(pemRepresentation: pem) {
-        self = try SSHKey(kind: .ecdsaP521, privateBytes: Array(key.rawRepresentation))
-      } else if der.count == 48, der.suffix(34).prefix(2) == [0x04, 0x20] {
-        // PKCS#8 Ed25519: the last 32 bytes are the seed.
-        self = try SSHKey(kind: .ed25519, privateBytes: Array(der.suffix(32)))
-      } else {
-        throw ImportError.unsupportedType("This PKCS#8")
+    case "-----BEGIN EC PRIVATE KEY-----": self = try Self.parseSEC1(der)
+    case "-----BEGIN PRIVATE KEY-----": self = try Self.parsePKCS8(der)
+    default: throw ImportError.unrecognized
+    }
+  }
+
+  /// SEC1 `ECPrivateKey`: `SEQUENCE { version 1, privateKey OCTET STRING, [0] parameters, [1] publicKey BIT STRING }`.
+  /// The curve comes from `curve` (PKCS#8's algorithm parameters), else the named curve in `[0]`, else the size of
+  /// the public point (`ssh-keygen` writes explicit parameters, not a name), else the size of the scalar. A public
+  /// point that isn't the scalar's is refused.
+  static func parseSEC1(_ der: [UInt8], curve: Kind? = nil) throws -> SSHKey {
+    var outer = SSHWire.Reader(der)
+    let sequence = try DER.element(&outer)
+    guard sequence.tag == 0x30 else { throw ImportError.unrecognized }
+    var r = SSHWire.Reader(sequence.bytes)
+    let version = try DER.element(&r)
+    guard version.tag == 0x02, version.bytes == [1] else { throw ImportError.unrecognized }
+    let secret = try DER.element(&r)
+    guard secret.tag == 0x04, !secret.bytes.isEmpty else { throw ImportError.unrecognized }
+    var kind = curve
+    var publicPoint: [UInt8]?
+    while r.remaining > 0 {
+      let field = try DER.element(&r)
+      var inner = SSHWire.Reader(field.bytes)
+      switch field.tag {
+      case 0xA0:
+        let parameters = try DER.element(&inner)
+        if kind == nil, parameters.tag == 0x06 {
+          guard let named = DER.curves[parameters.bytes] else { throw ImportError.unsupportedType("This curve's") }
+          kind = named
+        }
+      case 0xA1:
+        let bits = try DER.element(&inner)
+        guard bits.tag == 0x03, bits.bytes.first == 0 else { throw ImportError.unrecognized }
+        publicPoint = Array(bits.bytes.dropFirst())
+      default: break
       }
-    default:
+    }
+    let size = secret.bytes.drop { $0 == 0 }.count
+    kind =
+      kind
+      ?? publicPoint.flatMap { [65: Kind.ecdsaP256, 97: .ecdsaP384, 133: .ecdsaP521][$0.count] }
+      ?? (size <= 32 ? .ecdsaP256 : size <= 48 ? .ecdsaP384 : .ecdsaP521)
+    guard let kind, let length = [Kind.ecdsaP256: 32, .ecdsaP384: 48, .ecdsaP521: 66][kind], size <= length else {
       throw ImportError.unrecognized
+    }
+    let scalar = [UInt8](repeating: 0, count: length - size) + secret.bytes.drop { $0 == 0 }
+    let key = try SSHKey(kind: kind, privateBytes: scalar)
+    // The blob ends with the public point.
+    if let publicPoint, try !key.publicKeyBlob().reversed().starts(with: publicPoint.reversed()) {
+      throw ImportError.unrecognized
+    }
+    return key
+  }
+
+  /// PKCS#8 `PrivateKeyInfo`: `SEQUENCE { version, SEQUENCE { algorithm OID, parameters }, privateKey OCTET STRING }`,
+  /// holding a SEC1 ECDSA key, a PKCS#1 RSA key or an Ed25519 seed.
+  static func parsePKCS8(_ der: [UInt8]) throws -> SSHKey {
+    var outer = SSHWire.Reader(der)
+    let sequence = try DER.element(&outer)
+    guard sequence.tag == 0x30 else { throw ImportError.unrecognized }
+    var r = SSHWire.Reader(sequence.bytes)
+    guard try DER.element(&r).tag == 0x02 else { throw ImportError.unrecognized }
+    let algorithm = try DER.element(&r)
+    let privateKey = try DER.element(&r)
+    guard algorithm.tag == 0x30, privateKey.tag == 0x04 else { throw ImportError.unrecognized }
+    var a = SSHWire.Reader(algorithm.bytes)
+    let oid = try DER.element(&a)
+    let parameters = a.remaining > 0 ? try DER.element(&a) : nil
+    guard oid.tag == 0x06 else { throw ImportError.unrecognized }
+    switch oid.bytes {
+    case DER.ecPublicKey:
+      // A named curve, or explicit parameters (`ssh-keygen -m PKCS8`): then the key itself tells the curve.
+      var curve: Kind?
+      if let parameters, parameters.tag == 0x06 {
+        guard let named = DER.curves[parameters.bytes] else { throw ImportError.unsupportedType("This curve's") }
+        curve = named
+      }
+      return try parseSEC1(privateKey.bytes, curve: curve)
+    case DER.rsaEncryption:
+      return try SSHKey(kind: .rsa, privateBytes: privateKey.bytes)
+    case DER.ed25519:
+      var inner = SSHWire.Reader(privateKey.bytes)
+      let seed = try DER.element(&inner)
+      guard seed.tag == 0x04, seed.bytes.count == 32 else { throw ImportError.unrecognized }
+      return try SSHKey(kind: .ed25519, privateBytes: seed.bytes)
+    default:
+      throw ImportError.unsupportedType("This PKCS#8")
     }
   }
 
@@ -342,6 +426,22 @@ enum DER {
     for _ in 0..<Int(first & 0x7F) { value = value << 8 | Int(try r.readByte()) }
     return value
   }
+
+  /// One element: its tag and contents.
+  static func element(_ r: inout SSHWire.Reader) throws -> (tag: UInt8, bytes: [UInt8]) {
+    let tag = try r.readByte()
+    return (tag, try r.readBytes(try length(&r)))
+  }
+
+  // Object identifiers' contents.
+  static let ecPublicKey: [UInt8] = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01]  // 1.2.840.10045.2.1
+  static let rsaEncryption: [UInt8] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01]  // 1.2.840.113549.1.1.1
+  static let ed25519: [UInt8] = [0x2B, 0x65, 0x70]  // 1.3.101.112
+  static let curves: [[UInt8]: SSHKey.Kind] = [
+    [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07]: .ecdsaP256,  // 1.2.840.10045.3.1.7
+    [0x2B, 0x81, 0x04, 0x00, 0x22]: .ecdsaP384,  // 1.3.132.0.34
+    [0x2B, 0x81, 0x04, 0x00, 0x23]: .ecdsaP521,  // 1.3.132.0.35
+  ]
 
   static func integer(_ r: inout SSHWire.Reader) throws -> [UInt8] {
     guard try r.readByte() == 0x02 else { throw SSHKey.ImportError.unrecognized }
