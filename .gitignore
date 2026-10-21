@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Build
+.build/
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+/.swiftpm
+Package.resolved
+
+# libssh2: Database's Scripts/build-libssh2.sh builds it; a checkout without Binary/ downloads the release asset
+/Binary/
+
+# Local test server's SSH key (see Tests/SSHKitTests/TestServer.swift)
+/.testing/
+
+# Agents (local agent instructions, settings and boards)
+CLAUDE.md
+AGENTS.md
+.claude/
+.codex/
+.commandcode/
+.hermes/
+KANBAN*.md
+graphify-out/

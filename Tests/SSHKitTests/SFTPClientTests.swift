@@ -1,22 +1,19 @@
 import Foundation
 import Testing
-import WireKit
 
-@testable import SSHTunnel
+@testable import SSHKit
 
-/// SFTP against the same SSH server as the tunnel tests: the `sshd` bastion from docker-compose.yml
-/// (127.0.0.1:2222, user "tunnel"), or any sshd with an SFTP subsystem that takes `.testing/ssh/id_ed25519`
-/// (`SSH_TEST_PORT=<port> SSH_TEST_USER=<user> SSH_TEST_SERVICES=local`). Skipped when nothing listens there.
+/// SFTP against the test server (`TestServer`); skipped when nothing listens there.
 /// Files go in a new folder under /tmp on the server, removed at the end.
-@Suite(.serialized, .enabled(if: sshServerIsUp, "needs an sshd on SSH_TEST_PORT (see SSHTunnelTests)"))
+@Suite(.serialized, .enabled(if: TestServer.isUp, "needs an sshd on SSH_TEST_PORT (see TestServer)"))
 struct SFTPClientTests {
   /// The sshd's port as the server itself sees it, for logins through it as a jump host.
-  static let portOnServer = SSHTunnelTests.local ? SSHTunnelTests.port : 22
+  static let portOnServer = TestServer.portOnServer
 
   let root = "/tmp/sftp-tests-\(UUID().uuidString.prefix(8))"
 
   func connect(knownFingerprint: String? = nil) async throws -> SFTPClient {
-    var server = try SSHTunnelTests.bastion
+    var server = try TestServer.server
     server.knownFingerprint = knownFingerprint
     let client = try await SFTPClient.connect(server: server, timeout: 10)
     try await client.createDirectory(root)
@@ -178,7 +175,7 @@ struct SFTPClientTests {
   }
 
   @Test func refusesAChangedHostKey() async throws {
-    var server = try SSHTunnelTests.bastion
+    var server = try TestServer.server
     server.knownFingerprint = "SHA256:not-the-real-one"
     do {
       _ = try await SFTPClient.connect(server: server)
@@ -204,7 +201,7 @@ struct SFTPClientTests {
 
   @Test func logsInThroughAJumpHost() async throws {
     // The server through itself: a login to it, a channel from it to its own sshd, a second login over that.
-    let jump = try SSHTunnelTests.bastion
+    let jump = try TestServer.server
     let server = SSHServer(
       host: "127.0.0.1", port: Self.portOnServer, user: jump.user, key: jump.key)
     let client = try await SFTPClient.connect(server: server, through: jump, timeout: 10)
@@ -217,43 +214,9 @@ struct SFTPClientTests {
     try await cleanUp(client)
   }
 
-  @Test func tunnelsThroughAJumpHost() async throws {
-    let jump = try SSHTunnelTests.bastion
-    let server = SSHServer(host: "127.0.0.1", port: Self.portOnServer, user: jump.user, key: jump.key)
-    let tunnel = try await SSHTunnel.open(server: server, through: jump, timeout: 10)
-    defer { tunnel.close() }
-    #expect(tunnel.jumpHostKeyFingerprint?.hasPrefix("SHA256:") == true)
-    // A service the server always has: its own sshd, which greets first.
-    let channel = try await tunnel.open(host: "127.0.0.1", port: Self.portOnServer)
-    let greeting = try await channel.receive()
-    #expect(String(decoding: greeting, as: UTF8.self).hasPrefix("SSH-2.0-"))
-    channel.close()
-  }
-
   @Test func reportsAJumpHostThatCantReachTheServer() async throws {
-    let jump = try SSHTunnelTests.bastion
+    let jump = try TestServer.server
     let server = SSHServer(host: "127.0.0.1", port: 1, user: jump.user, key: jump.key)
     await #expect(throws: SSHTunnelError.self) { try await SFTPClient.connect(server: server, through: jump, timeout: 5) }
-  }
-}
-
-let sshServerIsUp: Bool = {
-  guard FileManager.default.fileExists(atPath: SSHTunnelTests.keyURL.path) else { return false }
-  guard let socket = try? Sockets.connect(host: "127.0.0.1", port: SSHTunnelTests.port, timeout: 1) else { return false }
-  Sockets.close(socket)
-  return true
-}()
-
-/// Path helpers; no server needed.
-struct SFTPPathTests {
-  @Test func parents() {
-    #expect(SFTPClient.parent("/a/b/c") == "/a/b")
-    #expect(SFTPClient.parent("/a") == "/")
-    #expect(SFTPClient.parent("a/b/") == "a")
-    #expect(SFTPClient.parent("a") == "")
-    #expect(SFTPClient.join("/", "a") == "/a")
-    #expect(SFTPClient.join("a", "b") == "a/b")
-    #expect(SFTPClient.join("", "b") == "b")
-    #expect(SFTPClient.name("/a/b.txt") == "b.txt")
   }
 }

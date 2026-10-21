@@ -2,16 +2,17 @@ import CLibssh2
 import Foundation
 
 /// One libssh2 session from the TCP connection to a logged-in user: handshake, host key check, key or password
-/// login. `SSHTunnel` and `SFTPClient` both log in through it, so they check host keys and authenticate the same way.
+/// login. `SFTPClient`, `SSHCommand`, `SSHJump` and Database's `SSHTunnel` all log in through it, so they check host keys
+/// and authenticate the same way.
 ///
 /// libssh2 isn't thread-safe per session: everything here runs on the thread that owns the session. The session is
 /// non-blocking; `waitSocket` sleeps until libssh2 can go on.
-final class SSHLogin {
-  let server: SSHServer
-  private(set) var session: OpaquePointer?
-  private(set) var socket: SocketHandle = Sockets.invalid
-  private(set) var hostKeyFingerprint = ""
-  private(set) var hostKeyType = ""
+public final class SSHLogin {
+  public let server: SSHServer
+  public private(set) var session: OpaquePointer?
+  public private(set) var socket: SocketHandle = Sockets.invalid
+  public private(set) var hostKeyFingerprint = ""
+  public private(set) var hostKeyType = ""
   /// The jump host's login and the channel through it, when the server is reached through one.
   private let jump: SSHJump?
 
@@ -22,7 +23,7 @@ final class SSHLogin {
     return true
   }()
 
-  init(server: SSHServer, jump: SSHJump?) {
+  public init(server: SSHServer, jump: SSHJump?) {
     _ = Self.initialized
     self.server = server
     self.jump = jump
@@ -30,7 +31,7 @@ final class SSHLogin {
 
   /// Connects (or takes the jump host's channel), shakes hands, checks the host key and logs in. On failure the
   /// caller still calls `teardown`.
-  func connect(timeout: TimeInterval) throws {
+  public func connect(timeout: TimeInterval) throws {
     if let jump {
       socket = jump.takeSocket()
     } else {
@@ -131,7 +132,7 @@ final class SSHLogin {
   // MARK: Teardown
 
   /// Says goodbye, frees the session, closes the socket and the jump host's login.
-  func teardown(reason: String = "Closing") {
+  public func teardown(reason: String = "Closing") {
     if let sess = session {
       libssh2_session_set_blocking(sess, 1)
       libssh2_session_set_timeout(sess, 2000)
@@ -148,7 +149,7 @@ final class SSHLogin {
 
   // MARK: Helpers
 
-  var isTransportDead: Bool {
+  public var isTransportDead: Bool {
     guard let session else { return true }
     let errno = libssh2_session_last_errno(session)
     return errno == LIBSSH2_ERROR_SOCKET_DISCONNECT || errno == LIBSSH2_ERROR_SOCKET_RECV
@@ -166,7 +167,7 @@ final class SSHLogin {
   }
 
   /// Sleeps (up to `milliseconds`) until the socket is ready the way libssh2 last wanted it.
-  func waitSocket(milliseconds: Int32 = 100) {
+  public func waitSocket(milliseconds: Int32 = 100) {
     guard let session else { return }
     let directions = libssh2_session_block_directions(session)
     var events: Int16 = 0
@@ -176,7 +177,7 @@ final class SSHLogin {
     Sockets.poll(&descriptors, milliseconds: milliseconds)
   }
 
-  func lastError() -> String {
+  public func lastError() -> String {
     guard let session else { return "unknown error" }
     var message: UnsafeMutablePointer<CChar>?
     var length: Int32 = 0

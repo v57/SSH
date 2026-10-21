@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import SSHTunnel
+import SSHKit
 import Testing
 
 /// A key held outside the app (the Secure Enclave): the tunnel only sees its public blob and a signer.

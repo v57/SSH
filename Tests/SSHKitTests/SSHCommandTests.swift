@@ -1,10 +1,10 @@
 import Foundation
 import Testing
 
-@testable import SSHTunnel
+@testable import SSHKit
 
-/// Commands against the same SSH server as the SFTP tests (see `SSHTunnelTests`); skipped when nothing listens there.
-@Suite(.serialized, .enabled(if: sshServerIsUp, "needs an sshd on SSH_TEST_PORT (see SSHTunnelTests)"))
+/// Commands against the same SSH server as the SFTP tests (see `TestServer`); skipped when nothing listens there.
+@Suite(.serialized, .enabled(if: TestServer.isUp, "needs an sshd on SSH_TEST_PORT (see TestServer)"))
 struct SSHCommandTests {
   final class Output: @unchecked Sendable {
     private let lock = NSLock()
@@ -15,7 +15,7 @@ struct SSHCommandTests {
 
   @Test func streamsOutputAndTheExitStatus() async throws {
     let output = Output()
-    let command = SSHCommand(server: try SSHTunnelTests.bastion, command: "echo one; echo two >&2; exit 7")
+    let command = SSHCommand(server: try TestServer.server, command: "echo one; echo two >&2; exit 7")
     let status = try await command.run(timeout: 10) { output.append($0) }
     #expect(status == 7)
     #expect(output.text.contains("one"))
@@ -26,7 +26,7 @@ struct SSHCommandTests {
   @Test func stopHangsTheCommandUp() async throws {
     let output = Output()
     let marker = "ssh-command-test-\(UUID().uuidString.prefix(8))"
-    let command = SSHCommand(server: try SSHTunnelTests.bastion, command: "echo started; sleep 30 # \(marker)")
+    let command = SSHCommand(server: try TestServer.server, command: "echo started; sleep 30 # \(marker)")
     let started = Date()
     async let status = command.run(timeout: 10) { output.append($0) }
     while !output.text.contains("started"), Date().timeIntervalSince(started) < 10 {
@@ -38,7 +38,7 @@ struct SSHCommandTests {
   }
 
   @Test func refusesAChangedHostKey() async throws {
-    var server = try SSHTunnelTests.bastion
+    var server = try TestServer.server
     server.knownFingerprint = "SHA256:not-the-key"
     let command = SSHCommand(server: server, command: "true")
     await #expect(throws: SSHTunnelError.self) { _ = try await command.run(timeout: 10) { _ in } }

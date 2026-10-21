@@ -5,7 +5,6 @@ import Foundation
 #else
   import _CryptoExtras
 #endif
-import WireKit
 
 /// A private key for SSH public-key login. Signing happens in Swift (CryptoKit /
 /// Security), and libssh2 gets the signature through its sign callback.
@@ -70,7 +69,7 @@ public struct SSHKey: Sendable {
 
   public func publicKeyBlob() throws -> [UInt8] {
     if let external { return external.publicKeyBlob }
-    var w = ByteWriter()
+    var w = SSHWire.Writer()
     SSHWire.string(&w, Array(kind.rawValue.utf8))
     switch kind {
     case .ed25519:
@@ -102,7 +101,7 @@ public struct SSHKey: Sendable {
 
   /// `SHA256:…`, as `ssh-keygen -l` prints it.
   public var fingerprint: String {
-    let digest = Digest.sha256((try? publicKeyBlob()) ?? [])
+    let digest = SHA256.hash(data: (try? publicKeyBlob()) ?? [])
     return "SHA256:" + Data(digest).base64EncodedString().replacingOccurrences(of: "=", with: "")
   }
 
@@ -130,7 +129,7 @@ public struct SSHKey: Sendable {
 
   static func ecdsaBlob(_ raw: [UInt8]) -> [UInt8] {
     let half = raw.count / 2
-    var w = ByteWriter()
+    var w = SSHWire.Writer()
     SSHWire.mpint(&w, Array(raw[..<half]))
     SSHWire.mpint(&w, Array(raw[half...]))
     return w.bytes
@@ -149,6 +148,16 @@ public struct SSHKey: Sendable {
       case .encrypted:
         "This key is protected by a passphrase, which Database can't read yet. Remove the passphrase with `ssh-keygen -p -f <key>`, or create a new key in Database."
       case .unsupportedType(let type): "\(type) keys aren't supported. Use an Ed25519, ECDSA or RSA key."
+      }
+    }
+  }
+
+  public enum SigningError: Error, LocalizedError {
+    case failed(String)
+
+    public var errorDescription: String? {
+      switch self {
+      case .failed(let detail): detail
       }
     }
   }
@@ -185,7 +194,7 @@ public struct SSHKey: Sendable {
   static func parseOpenSSH(_ der: [UInt8]) throws -> SSHKey {
     let magic = Array("openssh-key-v1".utf8) + [0]
     guard der.starts(with: magic) else { throw ImportError.unrecognized }
-    var r = ByteReader(der, offset: magic.count)
+    var r = SSHWire.Reader(der, offset: magic.count)
     let cipher = String(decoding: try SSHWire.readString(&r), as: UTF8.self)
     _ = try SSHWire.readString(&r)  // kdf name
     _ = try SSHWire.readString(&r)  // kdf options
@@ -193,7 +202,7 @@ public struct SSHKey: Sendable {
     let count = try r.readBE(UInt32.self)
     guard count >= 1 else { throw ImportError.unrecognized }
     for _ in 0..<count { _ = try SSHWire.readString(&r) }
-    var p = ByteReader(try SSHWire.readString(&r))
+    var p = SSHWire.Reader(try SSHWire.readString(&r))
     let check1 = try p.readBE(UInt32.self)
     let check2 = try p.readBE(UInt32.self)
     guard check1 == check2 else { throw ImportError.encrypted }
@@ -231,7 +240,7 @@ public struct SSHKey: Sendable {
   /// Unencrypted OpenSSH private key text, for saving a generated key to a file.
   public var openSSHPrivateKey: String {
     let blob = (try? publicKeyBlob()) ?? []
-    var priv = ByteWriter()
+    var priv = SSHWire.Writer()
     let check = UInt32.random(in: 0...UInt32.max)
     priv.writeBE(check)
     priv.writeBE(check)
@@ -242,7 +251,7 @@ public struct SSHKey: Sendable {
       SSHWire.string(&priv, pub)
       SSHWire.string(&priv, privateBytes + pub)
     case .ecdsaP256, .ecdsaP384, .ecdsaP521:
-      var br = ByteReader(blob)
+      var br = SSHWire.Reader(blob)
       _ = try? SSHWire.readString(&br)
       let curve = (try? SSHWire.readString(&br)) ?? []
       let point = (try? SSHWire.readString(&br)) ?? []
@@ -258,7 +267,7 @@ public struct SSHKey: Sendable {
       priv.write(pad)
       pad += 1
     }
-    var w = ByteWriter()
+    var w = SSHWire.Writer()
     w.write(Array("openssh-key-v1".utf8) + [0])
     SSHWire.string(&w, Array("none".utf8))
     SSHWire.string(&w, Array("none".utf8))
@@ -268,25 +277,6 @@ public struct SSHKey: Sendable {
     SSHWire.string(&w, priv.bytes)
     let base64 = Data(w.bytes).base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
     return "-----BEGIN OPENSSH PRIVATE KEY-----\n\(base64)\n-----END OPENSSH PRIVATE KEY-----\n"
-  }
-}
-
-/// SSH wire-format strings and mpints.
-enum SSHWire {
-  static func string(_ w: inout ByteWriter, _ bytes: [UInt8]) {
-    w.writeBE(UInt32(bytes.count))
-    w.write(bytes)
-  }
-
-  static func mpint(_ w: inout ByteWriter, _ bytes: [UInt8]) {
-    var payload = Array(bytes.drop { $0 == 0 })
-    if let first = payload.first, first & 0x80 != 0 { payload.insert(0, at: 0) }
-    string(&w, payload)
-  }
-
-  static func readString(_ r: inout ByteReader) throws -> [UInt8] {
-    let length = Int(try r.readBE(UInt32.self))
-    return try r.readBytes(length)
   }
 }
 
@@ -306,7 +296,7 @@ enum SSHRSA {
 #endif
 
   static func publicNumbers(pkcs1: [UInt8]) throws -> (n: [UInt8], e: [UInt8]) {
-    var r = ByteReader(pkcs1)
+    var r = SSHWire.Reader(pkcs1)
     guard try r.readByte() == 0x30 else { throw SSHKey.ImportError.unrecognized }
     _ = try DER.length(&r)
     _ = try DER.integer(&r)  // version
@@ -319,7 +309,7 @@ enum SSHRSA {
       guard
         let signature = SecKeyCreateSignature(
           try secKey(pkcs1), .rsaSignatureMessagePKCS1v15SHA256, Data(data) as CFData, &error)
-      else { throw WireError.authenticationFailed("RSA signing failed") }
+      else { throw SSHKey.SigningError.failed("RSA signing failed") }
       return [UInt8](signature as Data)
     #else
       guard let key = try? _RSA.Signing.PrivateKey(unsafeDERRepresentation: pkcs1) else {
@@ -328,7 +318,7 @@ enum SSHRSA {
       do {
         return [UInt8](try key.signature(for: Data(data), padding: .insecurePKCS1v1_5).rawRepresentation)
       } catch {
-        throw WireError.authenticationFailed("RSA signing failed")
+        throw SSHKey.SigningError.failed("RSA signing failed")
       }
     #endif
   }
@@ -345,7 +335,7 @@ enum SSHRSA {
 }
 
 enum DER {
-  static func length(_ r: inout ByteReader) throws -> Int {
+  static func length(_ r: inout SSHWire.Reader) throws -> Int {
     let first = try r.readByte()
     if first & 0x80 == 0 { return Int(first) }
     var value = 0
@@ -353,7 +343,7 @@ enum DER {
     return value
   }
 
-  static func integer(_ r: inout ByteReader) throws -> [UInt8] {
+  static func integer(_ r: inout SSHWire.Reader) throws -> [UInt8] {
     guard try r.readByte() == 0x02 else { throw SSHKey.ImportError.unrecognized }
     let bytes = try r.readBytes(try length(&r))
     return Array(bytes.drop { $0 == 0 })
