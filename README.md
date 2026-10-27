@@ -6,6 +6,9 @@
   closure) and `SSHLogin`: one session from the TCP connection to a logged-in user, with the host key checked
   (trust on first use, a changed key refused) and key, password or keyboard-interactive login.
 - `SSHCommand`: one command on a pseudo-terminal, its output streamed, its exit status, Stop hanging it up.
+- `SSHConnection`: one login running many commands side by side, each on its own channel without a terminal:
+  output and errors apart and byte for byte, input written then closed, the exit status (Git's iOS app runs git
+  on a Mac over it).
 - `SFTPClient`: list, stat, ranged reads, atomic writes, folders, rename, remove.
 - `SSHJump`: logins through a jump host (`ssh -J`), over a socket pair in this process.
 - `Sockets` and `PollWaker`: the socket layer (BSD sockets or Winsock) for apps that drive their own libssh2
