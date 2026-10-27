@@ -15,6 +15,36 @@ import Foundation
 #else
   public typealias SocketHandle = Int32
   public typealias PollDescriptor = pollfd
+
+  /// The C library's socket calls by a name of their own: `Sockets` and `PollWaker` have methods called the same.
+  enum Posix {
+    #if canImport(Darwin)
+      static func poll(_ fds: UnsafeMutablePointer<pollfd>, _ count: nfds_t, _ timeout: Int32) -> Int32 { Darwin.poll(fds, count, timeout) }
+      static func close(_ fd: Int32) -> Int32 { Darwin.close(fd) }
+      static func shutdown(_ fd: Int32, _ how: Int32) -> Int32 { Darwin.shutdown(fd, how) }
+      static func connect(_ fd: Int32, _ address: UnsafePointer<sockaddr>!, _ length: socklen_t) -> Int32 { Darwin.connect(fd, address, length) }
+      static func bind(_ fd: Int32, _ address: UnsafePointer<sockaddr>!, _ length: socklen_t) -> Int32 { Darwin.bind(fd, address, length) }
+      static func listen(_ fd: Int32, _ backlog: Int32) -> Int32 { Darwin.listen(fd, backlog) }
+      static func accept(_ fd: Int32, _ address: UnsafeMutablePointer<sockaddr>!, _ length: UnsafeMutablePointer<socklen_t>!) -> Int32 { Darwin.accept(fd, address, length) }
+      static func recv(_ fd: Int32, _ buffer: UnsafeMutableRawPointer!, _ count: Int, _ flags: Int32) -> Int { Darwin.recv(fd, buffer, count, flags) }
+      static func send(_ fd: Int32, _ buffer: UnsafeRawPointer!, _ count: Int, _ flags: Int32) -> Int { Darwin.send(fd, buffer, count, flags) }
+      static func write(_ fd: Int32, _ buffer: UnsafeRawPointer!, _ count: Int) -> Int { Darwin.write(fd, buffer, count) }
+      static func read(_ fd: Int32, _ buffer: UnsafeMutableRawPointer!, _ count: Int) -> Int { Darwin.read(fd, buffer, count) }
+    #else
+      static func poll(_ fds: UnsafeMutablePointer<pollfd>, _ count: nfds_t, _ timeout: Int32) -> Int32 { Glibc.poll(fds, count, timeout) }
+      static func close(_ fd: Int32) -> Int32 { Glibc.close(fd) }
+      static func shutdown(_ fd: Int32, _ how: Int32) -> Int32 { Glibc.shutdown(fd, how) }
+      static func connect(_ fd: Int32, _ address: UnsafePointer<sockaddr>!, _ length: socklen_t) -> Int32 { Glibc.connect(fd, address, length) }
+      static func bind(_ fd: Int32, _ address: UnsafePointer<sockaddr>!, _ length: socklen_t) -> Int32 { Glibc.bind(fd, address, length) }
+      static func listen(_ fd: Int32, _ backlog: Int32) -> Int32 { Glibc.listen(fd, backlog) }
+      static func accept(_ fd: Int32, _ address: UnsafeMutablePointer<sockaddr>!, _ length: UnsafeMutablePointer<socklen_t>!) -> Int32 { Glibc.accept(fd, address, length) }
+      static func recv(_ fd: Int32, _ buffer: UnsafeMutableRawPointer!, _ count: Int, _ flags: Int32) -> Int { Glibc.recv(fd, buffer, count, flags) }
+      // Linux has no SO_NOSIGPIPE: a write to a closed peer must not raise SIGPIPE.
+      static func send(_ fd: Int32, _ buffer: UnsafeRawPointer!, _ count: Int, _ flags: Int32) -> Int { Glibc.send(fd, buffer, count, flags | Int32(MSG_NOSIGNAL)) }
+      static func write(_ fd: Int32, _ buffer: UnsafeRawPointer!, _ count: Int) -> Int { Glibc.write(fd, buffer, count) }
+      static func read(_ fd: Int32, _ buffer: UnsafeMutableRawPointer!, _ count: Int) -> Int { Glibc.read(fd, buffer, count) }
+    #endif
+  }
 #endif
 
 /// Why a socket couldn't connect or listen.
@@ -78,7 +108,7 @@ public enum Sockets {
     #if os(Windows)
       WSAPoll(&descriptors, ULONG(descriptors.count), milliseconds)
     #else
-      Darwin.poll(&descriptors, nfds_t(descriptors.count), milliseconds)
+      Posix.poll(&descriptors, nfds_t(descriptors.count), milliseconds)
     #endif
   }
 
@@ -93,7 +123,7 @@ public enum Sockets {
     #if os(Windows)
       _ = closesocket(socket)
     #else
-      _ = Darwin.close(socket)
+      _ = Posix.close(socket)
     #endif
   }
 
@@ -102,7 +132,7 @@ public enum Sockets {
     #if os(Windows)
       _ = shutdown(socket, Int32(SD_SEND))
     #else
-      _ = Darwin.shutdown(socket, SHUT_WR)
+      _ = Posix.shutdown(socket, Int32(SHUT_WR))
     #endif
   }
 
@@ -131,7 +161,7 @@ public enum Sockets {
     #if os(Windows)
       setOption(socket, level: Int32(IPPROTO_TCP.rawValue), name: TCP_NODELAY, value: 1)
     #else
-      setOption(socket, level: IPPROTO_TCP, name: TCP_NODELAY, value: 1)
+      setOption(socket, level: Int32(IPPROTO_TCP), name: Int32(TCP_NODELAY), value: 1)
     #endif
   }
 
@@ -189,9 +219,14 @@ public enum Sockets {
       setOption(socket, level: tcp, name: 17, value: keepAlive.interval)  // TCP_KEEPINTVL
       setOption(socket, level: tcp, name: 16, value: keepAlive.count)  // TCP_KEEPCNT
     #else
-      setOption(socket, level: IPPROTO_TCP, name: TCP_KEEPALIVE, value: keepAlive.idle)
-      setOption(socket, level: IPPROTO_TCP, name: TCP_KEEPINTVL, value: keepAlive.interval)
-      setOption(socket, level: IPPROTO_TCP, name: TCP_KEEPCNT, value: keepAlive.count)
+      let tcp = Int32(IPPROTO_TCP)
+      #if canImport(Darwin)
+        setOption(socket, level: tcp, name: TCP_KEEPALIVE, value: keepAlive.idle)
+      #else
+        setOption(socket, level: tcp, name: TCP_KEEPIDLE, value: keepAlive.idle)
+      #endif
+      setOption(socket, level: tcp, name: TCP_KEEPINTVL, value: keepAlive.interval)
+      setOption(socket, level: tcp, name: TCP_KEEPCNT, value: keepAlive.count)
     #endif
   }
 
@@ -204,8 +239,10 @@ public enum Sockets {
     hints.ai_family = AF_UNSPEC
     #if os(Windows)
       hints.ai_socktype = Int32(SOCK_STREAM)
-    #else
+    #elseif canImport(Darwin)
       hints.ai_socktype = SOCK_STREAM
+    #else
+      hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
     #endif
     var info: UnsafeMutablePointer<addrinfo>?
     let rc = getaddrinfo(host, String(port), &hints, &info)
@@ -218,7 +255,7 @@ public enum Sockets {
       let fd = socket(address.pointee.ai_family, address.pointee.ai_socktype, address.pointee.ai_protocol)
       if fd == invalid { continue }
       setNoDelay(fd)
-      #if !os(Windows)
+      #if canImport(Darwin)
         setOption(fd, level: SOL_SOCKET, name: SO_NOSIGPIPE, value: 1)
       #endif
       if let keepAlive { setKeepAlive(fd, keepAlive) }
@@ -227,7 +264,7 @@ public enum Sockets {
         let connected = WinSDK.connect(fd, address.pointee.ai_addr, Int32(address.pointee.ai_addrlen)) == 0
         let inProgress = !connected && WSAGetLastError() == WSAEWOULDBLOCK
       #else
-        let connected = Darwin.connect(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0
+        let connected = Posix.connect(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0
         let inProgress = !connected && (errno == EINPROGRESS || errno == EALREADY)
       #endif
       if connected { return fd }
@@ -256,8 +293,10 @@ public enum Sockets {
     hints.ai_flags = AI_PASSIVE
     #if os(Windows)
       hints.ai_socktype = Int32(SOCK_STREAM)
-    #else
+    #elseif canImport(Darwin)
       hints.ai_socktype = SOCK_STREAM
+    #else
+      hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
     #endif
     var info: UnsafeMutablePointer<addrinfo>?
     let rc = getaddrinfo(host.isEmpty ? nil : host, String(port), &hints, &info)
@@ -276,7 +315,7 @@ public enum Sockets {
           && WinSDK.listen(fd, 16) == 0
       #else
         setOption(fd, level: SOL_SOCKET, name: SO_REUSEADDR, value: 1)
-        let bound = Darwin.bind(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0 && Darwin.listen(fd, 16) == 0
+        let bound = Posix.bind(fd, address.pointee.ai_addr, address.pointee.ai_addrlen) == 0 && Posix.listen(fd, 16) == 0
       #endif
       if bound { return (fd, localPort(fd)) }
       let error = Self.lastError
@@ -292,13 +331,13 @@ public enum Sockets {
       #if os(Windows)
         let client = WinSDK.accept(listener, nil, nil)
       #else
-        let client = Darwin.accept(listener, nil, nil)
+        let client = Posix.accept(listener, nil, nil)
         if client < 0 && errno == EINTR { continue }
       #endif
       guard client != invalid else { return nil }
       setNonBlocking(client)
       setNoDelay(client)
-      #if !os(Windows)
+      #if canImport(Darwin)
         setOption(client, level: SOL_SOCKET, name: SO_NOSIGPIPE, value: 1)
       #endif
       return client
@@ -321,7 +360,7 @@ public enum Sockets {
     #if os(Windows)
       let count = Int(recv(socket, buffer.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(buffer.count), 0))
     #else
-      let count = Darwin.recv(socket, buffer.baseAddress, buffer.count, 0)
+      let count = Posix.recv(socket, buffer.baseAddress, buffer.count, 0)
     #endif
     if count > 0 { return .bytes(count) }
     if count == 0 { return .closed }
@@ -332,7 +371,7 @@ public enum Sockets {
     #if os(Windows)
       let count = Int(WinSDK.send(socket, buffer.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(buffer.count), 0))
     #else
-      let count = Darwin.send(socket, buffer.baseAddress, buffer.count, 0)
+      let count = Posix.send(socket, buffer.baseAddress, buffer.count, 0)
     #endif
     if count >= 0 { return .bytes(count) }
     return wouldBlock ? .wouldBlock : .failed(lastError)
@@ -460,7 +499,7 @@ public final class PollWaker: @unchecked Sendable {
       }
     #else
       guard ends[1] >= 0 else { return }
-      _ = Darwin.write(ends[1], &byte, 1)
+      _ = Posix.write(ends[1], &byte, 1)
     #endif
   }
 
@@ -471,7 +510,7 @@ public final class PollWaker: @unchecked Sendable {
     #if os(Windows)
       while recv(fd, &sink, Int32(sink.count), 0) > 0 {}
     #else
-      while Darwin.read(fd, &sink, sink.count) > 0 {}
+      while Posix.read(fd, &sink, sink.count) > 0 {}
     #endif
   }
 
@@ -482,7 +521,7 @@ public final class PollWaker: @unchecked Sendable {
       if socket != Sockets.invalid { Sockets.close(socket) }
       socket = Sockets.invalid
     #else
-      for end in ends where end >= 0 { Darwin.close(end) }
+      for end in ends where end >= 0 { _ = Posix.close(end) }
       ends = [-1, -1]
     #endif
   }

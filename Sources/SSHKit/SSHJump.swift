@@ -108,11 +108,18 @@ public final class SSHJump: @unchecked Sendable {
 
     private func makeSocketPair() throws {
       var ends: [Int32] = [-1, -1]
-      guard socketpair(AF_UNIX, SOCK_STREAM, 0, &ends) == 0 else {
+      #if canImport(Darwin)
+        let type = SOCK_STREAM
+      #else
+        let type = Int32(SOCK_STREAM.rawValue)
+      #endif
+      guard socketpair(AF_UNIX, type, 0, &ends) == 0 else {
         throw SSHTunnelError.connectFailed("couldn't make a socket pair (\(Sockets.describe(Sockets.lastError)))")
       }
       for end in ends {
-        Sockets.setOption(end, level: SOL_SOCKET, name: SO_NOSIGPIPE, value: 1)
+        #if canImport(Darwin)
+          Sockets.setOption(end, level: SOL_SOCKET, name: SO_NOSIGPIPE, value: 1)
+        #endif
         // Both ends are non-blocking, like a TCP socket from `Sockets.connect`.
         Sockets.setNonBlocking(end)
       }

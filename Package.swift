@@ -41,10 +41,30 @@ func v57(_ name: String) -> Package.Dependency {
 }
 // Off Apple platforms CryptoKit and os are v57/SwiftUI's stand-ins, RSA is swift-crypto's _CryptoExtras
 // (Security.framework's on Apple platforms), and libssh2 builds from source (Sources/CLibssh2) with the platform's
-// crypto (WinCNG on Windows) in place of the prebuilt xcframework.
+// crypto (WinCNG on Windows, the system's OpenSSL on Linux: `apt install libssl-dev`) in place of the prebuilt
+// xcframework. Linux builds this copy rather than the distribution's libssh2, which may be older than 1.11.1
+// (Ubuntu 24.04 ships 1.11.0, without libssh2_sftp_posix_rename_ex).
 package.dependencies += [
   v57("SwiftUI"), .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"5.0.0"),
 ]
+#if os(Windows)
+// ECDSA (ecdh-sha2-nistp* key exchange, ECDSA host keys) needs Windows 10's BCrypt: OpenSSH 10 servers offer
+// no finite-field Diffie-Hellman, so without it they can't be reached.
+let libssh2Settings: [CSetting] = [
+  .define("LIBSSH2_WINCNG"), .define("LIBSSH2_ECDSA_WINCNG"), .define("LIBSSH2_LIBRARY"), .unsafeFlags(["-w"]),
+]
+// Linked here rather than in the module map, which can't tell platforms apart.
+let libssh2Linking: [LinkerSetting] = ["bcrypt", "crypt32", "ws2_32"].map { .linkedLibrary($0) }
+#else
+// What libssh2's configure finds on glibc (its hand-made configuration covers Windows only).
+let libssh2Settings: [CSetting] =
+  [
+    "LIBSSH2_OPENSSL", "LIBSSH2_LIBRARY", "HAVE_UNISTD_H", "HAVE_INTTYPES_H", "HAVE_SYS_SELECT_H", "HAVE_SYS_UIO_H",
+    "HAVE_SYS_SOCKET_H", "HAVE_SYS_IOCTL_H", "HAVE_SYS_TIME_H", "HAVE_SYS_UN_H", "HAVE_GETTIMEOFDAY", "HAVE_POLL",
+    "HAVE_SELECT", "HAVE_O_NONBLOCK", "HAVE_SNPRINTF", "HAVE_STRTOLL", "HAVE_EXPLICIT_BZERO",
+  ].map { .define($0) } + [.unsafeFlags(["-w"])]
+let libssh2Linking: [LinkerSetting] = [.linkedLibrary("ssl"), .linkedLibrary("crypto")]
+#endif
 package.targets.removeAll { $0.name == "Libssh2" }
 package.targets.append(
   .target(
@@ -55,11 +75,7 @@ package.targets.append(
       "src/openssl.c", "src/libgcrypt.c", "src/mbedtls.c", "src/os400qc3.c", "src/wincng.c", "src/agent_win.c",
     ],
     sources: ["src"],
-    // ECDSA (ecdh-sha2-nistp* key exchange, ECDSA host keys) needs Windows 10's BCrypt: OpenSSH 10 servers offer
-    // no finite-field Diffie-Hellman, so without it they can't be reached.
-    cSettings: [
-      .define("LIBSSH2_WINCNG"), .define("LIBSSH2_ECDSA_WINCNG"), .define("LIBSSH2_LIBRARY"), .unsafeFlags(["-w"]),
-    ]))
+    cSettings: libssh2Settings, linkerSettings: libssh2Linking))
 package.products.removeAll { $0.name == "Libssh2" }
 package.products.append(.library(name: "Libssh2", targets: ["CLibssh2"]))
 for target in package.targets where target.name == "SSHKit" || target.name == "SSHKitTests" {
