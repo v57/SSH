@@ -475,7 +475,7 @@ public final class SFTPClient: @unchecked Sendable {
   fileprivate func readNow(_ path: String, offset: UInt64, length: Int?) throws -> Data {
     let sftp = try session
     let file = try handle(path) {
-      libssh2_sftp_open_ex(sftp, path, UInt32(path.utf8.count), UInt(LIBSSH2_FXF_READ), 0, LIBSSH2_SFTP_OPENFILE)
+      libssh2_sftp_open_ex(sftp, path, UInt32(path.utf8.count), CUnsignedLong(LIBSSH2_FXF_READ), 0, LIBSSH2_SFTP_OPENFILE)
     }
     var result = Data()
     do {
@@ -485,7 +485,7 @@ public final class SFTPClient: @unchecked Sendable {
       if info.isDirectory { throw SFTPError.isADirectory(path) }
       let available = info.size > offset ? Int(clamping: info.size - offset) : 0
       var remaining = length ?? Int.max
-      if remaining > 0, attributes.flags & UInt(LIBSSH2_SFTP_ATTR_SIZE) != 0 {
+      if remaining > 0, attributes.flags & CUnsignedLong(LIBSSH2_SFTP_ATTR_SIZE) != 0 {
         result.reserveCapacity(min(remaining, available))
       }
       libssh2_sftp_seek64(file, offset)
@@ -539,11 +539,11 @@ public final class SFTPClient: @unchecked Sendable {
 
   private func writeFile(_ data: Data, to path: String, permissions: UInt32) throws {
     let sftp = try session
-    let flags = UInt(LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC)
+    let flags = CUnsignedLong(LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC)
     let file: OpaquePointer
     do {
       file = try handle(path) {
-        libssh2_sftp_open_ex(sftp, path, UInt32(path.utf8.count), flags, Int(permissions), LIBSSH2_SFTP_OPENFILE)
+        libssh2_sftp_open_ex(sftp, path, UInt32(path.utf8.count), flags, CLong(permissions), LIBSSH2_SFTP_OPENFILE)
       }
     } catch let error as SFTPError {
       guard error.isRefusal else { throw error }
@@ -604,7 +604,7 @@ public final class SFTPClient: @unchecked Sendable {
   private func makeDirectory(_ path: String, permissions: UInt32) throws {
     let sftp = try session
     do {
-      _ = try call(path) { Int(libssh2_sftp_mkdir_ex(sftp, path, UInt32(path.utf8.count), Int(permissions))) }
+      _ = try call(path) { Int(libssh2_sftp_mkdir_ex(sftp, path, UInt32(path.utf8.count), CLong(permissions))) }
     } catch let error as SFTPError {
       guard error.isRefusal else { throw error }
       // OpenSSH says only "failure" when something is already there.
@@ -622,7 +622,7 @@ public final class SFTPClient: @unchecked Sendable {
     let sftp = try session
     // Flags reach only SFTP v5+ servers; OpenSSH (v3) never replaces with a plain rename.
     let flags =
-      replacing ? Int(LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC | LIBSSH2_SFTP_RENAME_NATIVE) : 0
+      replacing ? CLong(LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC | LIBSSH2_SFTP_RENAME_NATIVE) : 0
     func plainRename() throws {
       _ = try call(source) {
         Int(
@@ -702,7 +702,7 @@ public final class SFTPClient: @unchecked Sendable {
   static func info(path: String, _ attributes: LIBSSH2_SFTP_ATTRIBUTES) -> SFTPFileInfo {
     var kind = SFTPFileInfo.Kind.other
     var permissions: UInt32?
-    if attributes.flags & UInt(LIBSSH2_SFTP_ATTR_PERMISSIONS) != 0 {
+    if attributes.flags & CUnsignedLong(LIBSSH2_SFTP_ATTR_PERMISSIONS) != 0 {
       let mode = UInt32(truncatingIfNeeded: attributes.permissions)
       permissions = mode & 0o7777
       switch mode & 0o170000 {
@@ -712,9 +712,9 @@ public final class SFTPClient: @unchecked Sendable {
       default: kind = .other
       }
     }
-    let size = attributes.flags & UInt(LIBSSH2_SFTP_ATTR_SIZE) != 0 ? UInt64(attributes.filesize) : 0
+    let size = attributes.flags & CUnsignedLong(LIBSSH2_SFTP_ATTR_SIZE) != 0 ? UInt64(attributes.filesize) : 0
     let modified =
-      attributes.flags & UInt(LIBSSH2_SFTP_ATTR_ACMODTIME) != 0
+      attributes.flags & CUnsignedLong(LIBSSH2_SFTP_ATTR_ACMODTIME) != 0
       ? Date(timeIntervalSince1970: TimeInterval(attributes.mtime)) : nil
     return SFTPFileInfo(
       path: path, kind: kind, isSymbolicLink: kind == .symbolicLink, size: kind == .directory ? 0 : size,
