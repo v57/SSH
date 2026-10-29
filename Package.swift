@@ -5,7 +5,7 @@ import PackageDescription
 
 let concurrency: [SwiftSetting] = [.enableUpcomingFeature("ApproachableConcurrency")]
 
-// libssh2 + mbedTLS (module CLibssh2), prebuilt by Database's Scripts/build-libssh2.sh and published on Database's
+// libssh2 + mbedTLS (module CLibssh2), prebuilt by Database's Scripts/build-libssh2.sh and published on Shell's
 // GitHub Releases. Binary/Libssh2.xcframework (not in git) is used instead when it's there.
 let libssh2: Target = {
   let path = "Binary/Libssh2.xcframework"
@@ -13,7 +13,7 @@ let libssh2: Target = {
     ? .binaryTarget(name: "Libssh2", path: path)
     : .binaryTarget(
       name: "Libssh2",
-      url: "https://github.com/v57/Database/releases/download/libssh2-1.11.1/Libssh2.xcframework.zip",
+      url: "https://github.com/v57/Shell/releases/download/libssh2-1.11.1/Libssh2.xcframework.zip",
       checksum: "b855ccebd64a0434cb1d59b1c1376676682a3fc48fde829b837881307abcea98")
 }()
 

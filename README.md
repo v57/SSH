@@ -16,7 +16,7 @@
 
 Database's `SSHTunnel` (database connections over `direct-tcpip` channels) is built on it.
 
-libssh2 is prebuilt for Apple platforms (Database's `Scripts/build-libssh2.sh`, published on Database's GitHub
+libssh2 is prebuilt for Apple platforms (Database's `Scripts/build-libssh2.sh`, published on Shell's GitHub
 Releases; a local `Binary/Libssh2.xcframework` wins) and built from source on Windows (`Sources/CLibssh2`, WinCNG).
 It has no Ed25519 host keys: servers need an ECDSA or RSA host key.
 
