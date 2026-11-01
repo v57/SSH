@@ -19,6 +19,8 @@ public final class SSHJump: @unchecked Sendable {
 
   /// The jump host's key, once logged in.
   public private(set) var hostKeyFingerprint = ""
+  /// The server's address the jump host reached: its host, or one of its fallbacks.
+  public private(set) var connectedHost = ""
 
   private init(jump: SSHServer) {
     login = SSHLogin(server: jump, jump: nil)
@@ -91,19 +93,26 @@ public final class SSHJump: @unchecked Sendable {
       waker.close()
     }
 
+    /// A channel to the first of the server's addresses the jump host reaches.
     private func openChannel(to server: SSHServer, deadline: Date) throws -> OpaquePointer {
       guard let session = login.session else { throw SSHTunnelError.closed }
-      while true {
-        let channel = server.host.withCString { host in
-          libssh2_channel_direct_tcpip_ex(session, host, Int32(server.port), "127.0.0.1", 0)
+      let hosts = server.hosts.isEmpty ? [server.host] : server.hosts
+      for (index, address) in hosts.enumerated() {
+        while true {
+          let channel = address.withCString { host in
+            libssh2_channel_direct_tcpip_ex(session, host, Int32(server.port), "127.0.0.1", 0)
+          }
+          if let channel {
+            connectedHost = address
+            return channel
+          }
+          guard libssh2_session_last_errno(session) == Self.eagain, Date() < deadline else { break }
+          login.waitSocket()
         }
-        if let channel { return channel }
-        guard libssh2_session_last_errno(session) == Self.eagain, Date() < deadline else {
-          throw SSHTunnelError.connectFailed(
-            "the jump host \(login.server.host) couldn't reach \(server.host):\(server.port)")
-        }
-        login.waitSocket()
+        if index == hosts.count - 1 || Date() >= deadline { break }
       }
+      throw SSHTunnelError.connectFailed(
+        "the jump host \(login.server.host) couldn't reach \(hosts.joined(separator: " or ")):\(server.port)")
     }
 
     private func makeSocketPair() throws {

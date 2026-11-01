@@ -13,6 +13,8 @@ public final class SSHLogin {
   public private(set) var socket: SocketHandle = Sockets.invalid
   public private(set) var hostKeyFingerprint = ""
   public private(set) var hostKeyType = ""
+  /// The address that answered: `server.host`, or one of its fallbacks.
+  public private(set) var connectedHost = ""
   /// The jump host's login and the channel through it, when the server is reached through one.
   private let jump: SSHJump?
 
@@ -34,11 +36,24 @@ public final class SSHLogin {
   public func connect(timeout: TimeInterval) throws {
     if let jump {
       socket = jump.takeSocket()
+      connectedHost = jump.connectedHost
     } else {
-      do {
-        socket = try Sockets.connect(host: server.host, port: server.port, timeout: timeout)
-      } catch {
-        throw SSHTunnelError.connectFailed(Self.describe(error, host: server.host))
+      // Each address in turn; with fallbacks, one that doesn't answer gets a share of the time (5 s at most), so
+      // the others still get a turn.
+      let hosts = server.hosts.isEmpty ? [server.host] : server.hosts
+      var failures: [String] = []
+      for (index, host) in hosts.enumerated() {
+        let isLast = index == hosts.count - 1
+        do {
+          socket = try Sockets.connect(host: host, port: server.port, timeout: isLast ? timeout : min(timeout, 5))
+          connectedHost = host
+          break
+        } catch {
+          failures.append(Self.describe(error, host: host))
+          if isLast {
+            throw SSHTunnelError.connectFailed(failures.joined(separator: "; "))
+          }
+        }
       }
     }
     guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {

@@ -3,6 +3,9 @@ import Foundation
 /// Where and how to log in over SSH.
 public struct SSHServer: Sendable, Hashable {
   public var host: String
+  /// Other addresses of the same machine, tried in order when `host` doesn't answer (a Mac's Bonjour name, its Hub
+  /// Network address). The host key check is the same for all of them.
+  public var fallbackHosts: [String]
   public var port: Int
   public var user: String
   public var password: String?
@@ -11,10 +14,11 @@ public struct SSHServer: Sendable, Hashable {
   public var knownFingerprint: String?
 
   public init(
-    host: String, port: Int = 22, user: String, password: String? = nil, key: SSHKey? = nil,
-    knownFingerprint: String? = nil
+    host: String, fallbackHosts: [String] = [], port: Int = 22, user: String, password: String? = nil,
+    key: SSHKey? = nil, knownFingerprint: String? = nil
   ) {
     self.host = host
+    self.fallbackHosts = fallbackHosts
     self.port = port
     self.user = user
     self.password = password
@@ -22,8 +26,14 @@ public struct SSHServer: Sendable, Hashable {
     self.knownFingerprint = knownFingerprint
   }
 
+  /// Every address to try, `host` first, each once.
+  public var hosts: [String] {
+    var seen = Set<String>()
+    return ([host] + fallbackHosts).filter { !$0.isEmpty && seen.insert($0).inserted }
+  }
+
   public static func == (a: SSHServer, b: SSHServer) -> Bool {
-    a.host == b.host && a.port == b.port && a.user == b.user && a.password == b.password
+    a.host == b.host && a.fallbackHosts == b.fallbackHosts && a.port == b.port && a.user == b.user && a.password == b.password
       && a.key?.privateBytes == b.key?.privateBytes
       && (try? a.key?.publicKeyBlob()) == (try? b.key?.publicKeyBlob()) && a.knownFingerprint == b.knownFingerprint
   }

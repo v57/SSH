@@ -18,6 +18,8 @@ public final class SSHConnection: @unchecked Sendable {
   public let server: SSHServer
   /// `SHA256:…`, to remember after the first login (as `SSHServer.knownFingerprint` next time).
   public private(set) var hostKeyFingerprint = ""
+  /// The address that answered: `server.host`, or one of `server.fallbackHosts`.
+  public private(set) var connectedHost = ""
 
   private let lock = NSLock()
   private var running = true
@@ -121,6 +123,7 @@ public final class SSHConnection: @unchecked Sendable {
     do {
       try login.connect(timeout: timeout)
       hostKeyFingerprint = login.hostKeyFingerprint
+      connectedHost = login.connectedHost
       // Keepalives without replies, so an idle session has nothing waiting to be read.
       if let session = login.session { libssh2_keepalive_config(session, 0, 30) }
     } catch {

@@ -7,6 +7,16 @@ import Testing
 /// nothing listens there.
 @Suite(.serialized, .enabled(if: TestServer.isUp, "needs an sshd on SSH_TEST_PORT (see TestServer)"))
 struct SSHConnectionTests {
+  @Test func triesTheFallbackAddressesWhenTheHostDoesntAnswer() async throws {
+    var server = try TestServer.server
+    server.fallbackHosts = [server.host]
+    server.host = "unreachable.invalid"
+    let connection = try await SSHConnection.connect(server: server, timeout: 10)
+    defer { connection.close() }
+    #expect(connection.connectedHost == "127.0.0.1")
+    #expect(try await connection.run("echo hi").status == 0)
+  }
+
   @Test func keepsOutputAndErrorApartAndTheExitStatus() async throws {
     let connection = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
     defer { connection.close() }

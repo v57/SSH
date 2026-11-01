@@ -126,3 +126,8 @@ struct SSHKeyTests {
     return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
   }
 }
+
+@Test func aServersAddressesAreItsHostThenEachFallbackOnce() {
+  let server = SSHServer(host: "studio.local", fallbackHosts: ["", "10.57.0.2", "studio.local", "10.57.0.2"], user: "v57")
+  #expect(server.hosts == ["studio.local", "10.57.0.2"])
+}
