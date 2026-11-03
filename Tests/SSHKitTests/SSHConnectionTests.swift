@@ -40,6 +40,60 @@ struct SSHConnectionTests {
     #expect(output.stdout == input)
   }
 
+  @Test func aChannelTalksBackAndForth() async throws {
+    let connection = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
+    defer { connection.close() }
+    // Answers each line while its input stays open, as git's services do.
+    let channel = connection.open("while read line; do echo \"got $line\"; done; echo done >&2; exit 4")
+    for word in ["one", "two"] {
+      channel.write(Data("\(word)\n".utf8))
+      let answer = try #require(try await channel.read())
+      #expect(String(decoding: answer, as: UTF8.self) == "got \(word)\n")
+    }
+    channel.finishWriting()
+    #expect(try await channel.read() == nil)
+    let output = try await channel.finished()
+    #expect(output.status == 4)
+    #expect(String(decoding: output.stderr, as: UTF8.self) == "done\n")
+  }
+
+  @Test func aChannelEndsWhenItsCommandDoesWithItsInputOpen() async throws {
+    let connection = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
+    defer { connection.close() }
+    let channel = connection.open("echo nope >&2; exit 3")
+    #expect(try await channel.read() == nil)
+    let output = try await channel.finished()
+    #expect(output.status == 3)
+    #expect(String(decoding: output.stderr, as: UTF8.self) == "nope\n")
+  }
+
+  @Test func aSlowReaderGetsEverythingAChannelSends() async throws {
+    let connection = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
+    defer { connection.close() }
+    let channel = connection.open("head -c 20000000 /dev/zero")
+    channel.finishWriting()
+    var total = 0
+    var reads = 0
+    while let data = try await channel.read() {
+      total += data.count
+      reads += 1
+      // Long enough for the channel to reach its limit and wait.
+      if reads == 1 { try await Task.sleep(for: .seconds(1)) }
+    }
+    #expect(total == 20_000_000)
+    #expect(try await channel.finished().status == 0)
+    #expect(try await connection.run("echo still here").status == 0)
+  }
+
+  @Test func closingAChannelEndsItsRead() async throws {
+    let connection = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
+    defer { connection.close() }
+    let channel = connection.open("sleep 30")
+    channel.close()
+    await #expect(throws: (any Error).self) { _ = try await channel.read() }
+    #expect(try await connection.run("echo still here").status == 0)
+  }
+
   @Test func runsCommandsSideBySide() async throws {
     let connection = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
     defer { connection.close() }
