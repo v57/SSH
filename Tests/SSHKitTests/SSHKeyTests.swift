@@ -35,7 +35,7 @@ struct SSHKeyTests {
     #expect(try !key.sign(Array("hello".utf8)).isEmpty)
   }
 
-  @Test func refusesPassphraseProtectedKeys() throws {
+  @Test func aPassphraseProtectedKeyAsksForItsPassphrase() throws {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -45,7 +45,9 @@ struct SSHKeyTests {
     process.arguments = ["-q", "-t", "ed25519", "-N", "secret", "-f", path]
     try process.run()
     process.waitUntilExit()
-    #expect(throws: SSHKey.ImportError.self) { try SSHKey(importing: String(contentsOfFile: path, encoding: .utf8)) }
+    let text = try String(contentsOfFile: path, encoding: .utf8)
+    #expect { try SSHKey(importing: text) } throws: { ($0 as? SSHKey.ImportError).map { if case .needsPassphrase = $0 { true } else { false } } ?? false }
+    #expect(try SSHKey(importing: text, passphrase: "secret").kind == .ed25519)
   }
 
   // MARK: PEM keys from other tools

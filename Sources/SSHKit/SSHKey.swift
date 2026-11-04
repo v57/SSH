@@ -152,14 +152,20 @@ public struct SSHKey: Sendable {
 
   public enum ImportError: Error, LocalizedError {
     case unrecognized
-    case encrypted
+    /// It's protected by a passphrase and none was given: ask for it and import again.
+    case needsPassphrase
+    case wrongPassphrase
+    /// Protected in a way this can't open (chacha20-poly1305, 3DES, encrypted PKCS#8).
+    case unsupportedEncryption(String)
     case unsupportedType(String)
 
     public var errorDescription: String? {
       switch self {
       case .unrecognized: "This doesn't look like an SSH private key."
-      case .encrypted:
-        "This key is protected by a passphrase, which Database can't read yet. Remove the passphrase with `ssh-keygen -p -f <key>`, or create a new key in Database."
+      case .needsPassphrase: "This key is protected by a passphrase. Enter it to import the key."
+      case .wrongPassphrase: "That passphrase doesn't open this key."
+      case .unsupportedEncryption(let name):
+        "This key is protected with \(name), which can't be read here. `ssh-keygen -p -Z aes256-ctr -f <key>` rewrites it in a form that can, keeping a passphrase."
       case .unsupportedType(let type): "\(type) keys aren't supported. Use an Ed25519, ECDSA or RSA key."
       }
     }
@@ -178,8 +184,9 @@ public struct SSHKey: Sendable {
   /// Reads an OpenSSH (`BEGIN OPENSSH PRIVATE KEY`) or PEM private key: PKCS#1 RSA (`BEGIN RSA PRIVATE KEY`), SEC1
   /// ECDSA (`BEGIN EC PRIVATE KEY`, as `ssh-keygen -m PEM` and `openssl ecparam -genkey` write it, with a named curve
   /// or explicit parameters), or PKCS#8 (`BEGIN PRIVATE KEY`: ECDSA, RSA or Ed25519). Blocks around the key, such as
-  /// `openssl ecparam`'s `BEGIN EC PARAMETERS`, are skipped.
-  public init(importing text: String) throws {
+  /// `openssl ecparam`'s `BEGIN EC PARAMETERS`, are skipped. A key protected by a passphrase needs it: without one this
+  /// throws `ImportError.needsPassphrase`, with the wrong one `wrongPassphrase`.
+  public init(importing text: String, passphrase: String? = nil) throws {
     let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
     guard
       let start = lines.firstIndex(where: { $0.hasPrefix("-----BEGIN ") && $0.hasSuffix("PRIVATE KEY-----") })
@@ -189,17 +196,31 @@ public struct SSHKey: Sendable {
     let begin = lines[start]
     let end = lines[start...].firstIndex { $0.hasPrefix("-----END ") } ?? lines.endIndex
     let block = lines[(start + 1)..<end]
-    if block.contains(where: { $0.hasPrefix("Proc-Type: 4,ENCRYPTED") }) || begin.contains("ENCRYPTED") {
-      throw ImportError.encrypted
-    }
+    if begin.contains("ENCRYPTED") { throw ImportError.unsupportedEncryption("encrypted PKCS#8") }
     let body = block.filter { !$0.contains(":") }.joined()
     guard var der = Data(base64Encoded: body).map({ [UInt8]($0) }) else { throw ImportError.unrecognized }
     defer { SSHSecretBytes.wipe(&der) }
+    let isPEMEncrypted = block.contains { $0.hasPrefix("Proc-Type: 4,ENCRYPTED") }
+    if isPEMEncrypted {
+      guard let passphrase, !passphrase.isEmpty else { throw ImportError.needsPassphrase }
+      guard let info = block.first(where: { $0.hasPrefix("DEK-Info:") }) else { throw ImportError.unrecognized }
+      der = try SSHKeyDecryption.pem(
+        dekInfo: String(info.dropFirst("DEK-Info:".count)), encrypted: der, passphrase: passphrase)
+    }
+    do {
+      self = try Self.parse(begin: begin, der: der, passphrase: passphrase)
+    } catch ImportError.unrecognized where isPEMEncrypted {
+      // The padding came out right by chance, and what it opened isn't a key.
+      throw ImportError.wrongPassphrase
+    }
+  }
+
+  private static func parse(begin: String, der: [UInt8], passphrase: String?) throws -> SSHKey {
     switch begin {
-    case "-----BEGIN OPENSSH PRIVATE KEY-----": self = try Self.parseOpenSSH(der)
-    case "-----BEGIN RSA PRIVATE KEY-----": self = try SSHKey(kind: .rsa, privateBytes: der)
-    case "-----BEGIN EC PRIVATE KEY-----": self = try Self.parseSEC1(der)
-    case "-----BEGIN PRIVATE KEY-----": self = try Self.parsePKCS8(der)
+    case "-----BEGIN OPENSSH PRIVATE KEY-----": try parseOpenSSH(der, passphrase: passphrase)
+    case "-----BEGIN RSA PRIVATE KEY-----": try SSHKey(kind: .rsa, privateBytes: der)
+    case "-----BEGIN EC PRIVATE KEY-----": try parseSEC1(der)
+    case "-----BEGIN PRIVATE KEY-----": try parsePKCS8(der)
     default: throw ImportError.unrecognized
     }
   }
@@ -289,21 +310,31 @@ public struct SSHKey: Sendable {
     }
   }
 
-  static func parseOpenSSH(_ der: [UInt8]) throws -> SSHKey {
+  static func parseOpenSSH(_ der: [UInt8], passphrase: String? = nil) throws -> SSHKey {
     let magic = Array("openssh-key-v1".utf8) + [0]
     guard der.starts(with: magic) else { throw ImportError.unrecognized }
     var r = SSHWire.Reader(der, offset: magic.count)
     let cipher = String(decoding: try SSHWire.readString(&r), as: UTF8.self)
-    _ = try SSHWire.readString(&r)  // kdf name
-    _ = try SSHWire.readString(&r)  // kdf options
-    guard cipher == "none" else { throw ImportError.encrypted }
+    let kdf = String(decoding: try SSHWire.readString(&r), as: UTF8.self)
+    let kdfOptions = try SSHWire.readString(&r)
     let count = try r.readBE(UInt32.self)
     guard count >= 1 else { throw ImportError.unrecognized }
     for _ in 0..<count { _ = try SSHWire.readString(&r) }
-    var p = SSHWire.Reader(try SSHWire.readString(&r))
+    var section = try SSHWire.readString(&r)
+    defer { SSHSecretBytes.wipe(&section) }
+    if cipher != "none" {
+      guard let passphrase, !passphrase.isEmpty else { throw ImportError.needsPassphrase }
+      let tag = try r.readBytes(SSHKeyDecryption.tagSize(cipher: cipher))
+      let opened = try SSHKeyDecryption.openSSH(
+        cipher: cipher, kdf: kdf, kdfOptions: kdfOptions, encrypted: section, tag: tag, passphrase: passphrase)
+      SSHSecretBytes.wipe(&section)
+      section = opened
+    }
+    var p = SSHWire.Reader(section)
     let check1 = try p.readBE(UInt32.self)
     let check2 = try p.readBE(UInt32.self)
-    guard check1 == check2 else { throw ImportError.encrypted }
+    // The section starts with one random number twice: the only way to tell a wrong passphrase.
+    guard check1 == check2 else { throw cipher == "none" ? ImportError.unrecognized : ImportError.wrongPassphrase }
     let type = String(decoding: try SSHWire.readString(&p), as: UTF8.self)
     switch type {
     case "ssh-ed25519":
