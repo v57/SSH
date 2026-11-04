@@ -228,7 +228,7 @@ private final class KeyBox {
   init(_ key: SSHKey) { self.key = key }
 }
 
-private final class PasswordBox {
+final class PasswordBox {
   let password: String
   init(_ password: String) { self.password = password }
 }
@@ -250,17 +250,45 @@ private let signCallback:
     return 0
   }
 
-private let keyboardInteractiveCallback:
+/// Which keyboard-interactive prompts the saved password answers. A server asks anything it likes this way, so the
+/// password goes only to a prompt that asks for the password, hidden as a password is: never to one that shows what's
+/// typed, and never to one for a one-time code or a new password. Every other prompt gets an empty answer.
+enum KeyboardPrompt {
+  private static let password = [
+    "password", "passwort", "kennwort", "contraseña", "contrasenya", "mot de passe", "senha", "parola",
+    "wachtwoord", "lösenord", "passord", "adgangskode", "salasana", "hasło", "heslo", "şifre", "пароль", "密码", "密碼",
+    "パスワード", "비밀번호",
+  ]
+  private static let notThePassword = [
+    "one-time", "one time", "onetime", "otp", "verification", "authenticator", "token", "two-factor", "2fa", "code",
+    "new ", "neu", "nouveau", "nueva", "confirm", "again", "retype", "repeat",
+  ]
+
+  static func asksForPassword(_ text: String, echo: Bool) -> Bool {
+    guard !echo else { return false }
+    let text = text.lowercased()
+    return password.contains { text.contains($0) } && !notThePassword.contains { text.contains($0) }
+  }
+}
+
+let keyboardInteractiveCallback:
   @convention(c) (
     UnsafePointer<CChar>?, Int32, UnsafePointer<CChar>?, Int32, Int32,
     UnsafePointer<LIBSSH2_USERAUTH_KBDINT_PROMPT>?, UnsafeMutablePointer<LIBSSH2_USERAUTH_KBDINT_RESPONSE>?,
     UnsafeMutablePointer<UnsafeMutableRawPointer?>?
-  ) -> Void = { _, _, _, _, count, _, responses, abstract in
-    guard let responses, let opaque = abstract?.pointee else { return }
+  ) -> Void = { _, _, _, _, count, prompts, responses, abstract in
+    guard let prompts, let responses, let opaque = abstract?.pointee else { return }
     let password = Unmanaged<PasswordBox>.fromOpaque(opaque).takeUnretainedValue().password
+    let bytes = Array(password.utf8)
     for i in 0..<Int(count) {
-      let bytes = Array(password.utf8)
-      let buffer = malloc(bytes.count)!.assumingMemoryBound(to: CChar.self)
+      // libssh2 sends an answer with no text as an empty string.
+      responses[i].text = nil
+      responses[i].length = 0
+      let prompt = prompts[i]
+      let text = prompt.text.map { String(decoding: UnsafeBufferPointer(start: $0, count: prompt.length), as: UTF8.self) }
+      guard !bytes.isEmpty, let text, KeyboardPrompt.asksForPassword(text, echo: prompt.echo != 0),
+        let buffer = malloc(bytes.count)?.assumingMemoryBound(to: CChar.self)
+      else { continue }
       bytes.withUnsafeBufferPointer { source in
         source.baseAddress!.withMemoryRebound(to: CChar.self, capacity: bytes.count) {
           buffer.update(from: $0, count: bytes.count)
