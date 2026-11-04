@@ -61,6 +61,7 @@ public final class SSHLogin {
     }
     session = sess
     libssh2_session_set_blocking(sess, 0)
+    SSHAlgorithms.restrict(sess)
     if server.key?.kind == .rsa {
       _ = libssh2_session_method_pref(sess, LIBSSH2_METHOD_SIGN_ALGO, "rsa-sha2-256")
     }
