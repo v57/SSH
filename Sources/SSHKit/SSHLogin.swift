@@ -69,7 +69,7 @@ public final class SSHLogin {
       SSHTunnelError.handshakeFailed(self.lastError())
     }
 
-    // Host key: trust on first use, refuse a changed key.
+    // Host key: settled before anything of the user's leaves this device.
     guard let hash = libssh2_hostkey_hash(sess, LIBSSH2_HOSTKEY_HASH_SHA256) else {
       throw SSHTunnelError.handshakeFailed("the server sent no host key")
     }
@@ -79,11 +79,12 @@ public final class SSHLogin {
     var keyType: Int32 = 0
     _ = libssh2_session_hostkey(sess, &keyLength, &keyType)
     hostKeyType = Self.hostKeyTypeName(keyType)
-    if let known = server.knownFingerprint, !known.isEmpty, known != hostKeyFingerprint {
-      throw SSHTunnelError.hostKeyChanged(expected: known, actual: hostKeyFingerprint)
-    }
+    try server.verify(
+      SSHHostKey(
+        host: server.host, port: server.port, address: connectedHost, fingerprint: hostKeyFingerprint, type: hostKeyType))
 
-    try authenticate(sess, deadline: deadline)
+    // A fresh deadline: someone may have just taken their time answering.
+    try authenticate(sess, deadline: Date().addingTimeInterval(timeout))
   }
 
   private func authenticate(_ sess: OpaquePointer, deadline: Date) throws {

@@ -39,7 +39,7 @@ struct SSHCommandTests {
 
   @Test func refusesAChangedHostKey() async throws {
     var server = try TestServer.server
-    server.knownFingerprint = "SHA256:not-the-key"
+    server.trust = .pinned("SHA256:not-the-key")
     let command = SSHCommand(server: server, command: "true")
     await #expect(throws: SSHTunnelError.self) { _ = try await command.run(timeout: 10) { _ in } }
   }

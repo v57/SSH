@@ -84,7 +84,7 @@ public enum SFTPError: Error, LocalizedError, Sendable, Equatable {
 /// async and may come from any thread; one thread owns the libssh2 session and runs the calls one at a time.
 public final class SFTPClient: @unchecked Sendable {
   public let server: SSHServer
-  /// `SHA256:…`, to remember after the first login (as `SSHServer.knownFingerprint` next time).
+  /// `SHA256:…`: the key `SSHServer.trust` accepted.
   public private(set) var hostKeyFingerprint = ""
   public private(set) var hostKeyType = ""
   /// The jump host's key, when the login went through one.

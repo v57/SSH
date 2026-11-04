@@ -16,7 +16,7 @@ public final class SSHConnection: @unchecked Sendable {
   }
 
   public let server: SSHServer
-  /// `SHA256:…`, to remember after the first login (as `SSHServer.knownFingerprint` next time).
+  /// `SHA256:…`: the key `SSHServer.trust` accepted.
   public private(set) var hostKeyFingerprint = ""
   /// The address that answered: `server.host`, or one of `server.fallbackHosts`.
   public private(set) var connectedHost = ""

@@ -14,7 +14,7 @@ struct SFTPClientTests {
 
   func connect(knownFingerprint: String? = nil) async throws -> SFTPClient {
     var server = try TestServer.server
-    server.knownFingerprint = knownFingerprint
+    if let knownFingerprint { server.trust = .pinned(knownFingerprint) }
     let client = try await SFTPClient.connect(server: server, timeout: 10)
     try await client.createDirectory(root)
     return client
@@ -176,7 +176,7 @@ struct SFTPClientTests {
 
   @Test func refusesAChangedHostKey() async throws {
     var server = try TestServer.server
-    server.knownFingerprint = "SHA256:not-the-real-one"
+    server.trust = .pinned("SHA256:not-the-real-one")
     do {
       _ = try await SFTPClient.connect(server: server)
       Issue.record("expected a host key error")
@@ -203,7 +203,7 @@ struct SFTPClientTests {
     // The server through itself: a login to it, a channel from it to its own sshd, a second login over that.
     let jump = try TestServer.server
     let server = SSHServer(
-      host: "127.0.0.1", port: Self.portOnServer, user: jump.user, key: jump.key)
+      host: "127.0.0.1", port: Self.portOnServer, user: jump.user, key: jump.key, trust: TestServer.acceptAnyKey)
     let client = try await SFTPClient.connect(server: server, through: jump, timeout: 10)
     #expect(client.jumpHostKeyFingerprint?.hasPrefix("SHA256:") == true)
     #expect(client.hostKeyFingerprint.hasPrefix("SHA256:"))
@@ -216,7 +216,7 @@ struct SFTPClientTests {
 
   @Test func reportsAJumpHostThatCantReachTheServer() async throws {
     let jump = try TestServer.server
-    let server = SSHServer(host: "127.0.0.1", port: 1, user: jump.user, key: jump.key)
+    let server = SSHServer(host: "127.0.0.1", port: 1, user: jump.user, key: jump.key, trust: .refuseUnknown)
     await #expect(throws: SSHTunnelError.self) { try await SFTPClient.connect(server: server, through: jump, timeout: 5) }
   }
 }

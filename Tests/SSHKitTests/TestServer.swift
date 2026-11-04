@@ -21,8 +21,11 @@ enum TestServer {
 
   static func testKey() throws -> SSHKey { try SSHKey(importing: String(contentsOf: keyURL, encoding: .utf8)) }
 
+  /// The test server's key isn't known ahead of time, and nothing here is secret.
+  static let acceptAnyKey = SSHHostTrust.ask { _ in true }
+
   static var server: SSHServer {
-    get throws { SSHServer(host: "127.0.0.1", port: port, user: user, key: try testKey()) }
+    get throws { SSHServer(host: "127.0.0.1", port: port, user: user, key: try testKey(), trust: acceptAnyKey) }
   }
 
   static let isUp: Bool = {
