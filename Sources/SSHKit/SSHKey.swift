@@ -29,8 +29,10 @@ public struct SSHKey: Sendable {
 
   public let kind: Kind
   /// Raw private key material: the 32-byte seed for Ed25519, the scalar for ECDSA,
-  /// PKCS#1 DER for RSA. Empty for a key held elsewhere (`external`).
-  public let privateBytes: [UInt8]
+  /// PKCS#1 DER for RSA. Empty for a key held elsewhere (`external`). A new copy, which is the caller's to look after:
+  /// the key's own is wiped when the last copy of the key goes away, and this one isn't.
+  public var privateBytes: [UInt8] { secret.array }
+  private let secret: SSHSecretBytes
   public var comment: String
   /// A key whose private part never reaches the app, like a Secure Enclave key: its public
   /// blob, and a function that signs (returning the signature body libssh2 expects).
@@ -43,7 +45,7 @@ public struct SSHKey: Sendable {
 
   public init(kind: Kind, privateBytes: [UInt8], comment: String = "") throws {
     self.kind = kind
-    self.privateBytes = privateBytes
+    secret = SSHSecretBytes(privateBytes)
     self.comment = comment
     external = nil
     _ = try publicKeyBlob()  // validates the material
@@ -54,7 +56,7 @@ public struct SSHKey: Sendable {
     kind: Kind, publicKeyBlob: [UInt8], comment: String = "", sign: @escaping @Sendable ([UInt8]) throws -> [UInt8]
   ) {
     self.kind = kind
-    privateBytes = []
+    secret = SSHSecretBytes([])
     self.comment = comment
     external = External(publicKeyBlob: publicKeyBlob, sign: sign)
   }
@@ -62,7 +64,9 @@ public struct SSHKey: Sendable {
   /// A new Ed25519 key.
   public static func generateEd25519(comment: String) -> SSHKey {
     let key = Curve25519.Signing.PrivateKey()
-    return try! SSHKey(kind: .ed25519, privateBytes: Array(key.rawRepresentation), comment: comment)
+    var seed = Array(key.rawRepresentation)
+    defer { SSHSecretBytes.wipe(&seed) }
+    return try! SSHKey(kind: .ed25519, privateBytes: seed, comment: comment)
   }
 
   // MARK: Public key
@@ -73,19 +77,21 @@ public struct SSHKey: Sendable {
     SSHWire.string(&w, Array(kind.rawValue.utf8))
     switch kind {
     case .ed25519:
-      let key = try Curve25519.Signing.PrivateKey(rawRepresentation: privateBytes)
+      let key = try Curve25519.Signing.PrivateKey(rawRepresentation: secret)
       SSHWire.string(&w, Array(key.publicKey.rawRepresentation))
     case .ecdsaP256:
       SSHWire.string(&w, Array("nistp256".utf8))
-      SSHWire.string(&w, Array(try P256.Signing.PrivateKey(rawRepresentation: privateBytes).publicKey.x963Representation))
+      SSHWire.string(&w, Array(try P256.Signing.PrivateKey(rawRepresentation: secret).publicKey.x963Representation))
     case .ecdsaP384:
       SSHWire.string(&w, Array("nistp384".utf8))
-      SSHWire.string(&w, Array(try P384.Signing.PrivateKey(rawRepresentation: privateBytes).publicKey.x963Representation))
+      SSHWire.string(&w, Array(try P384.Signing.PrivateKey(rawRepresentation: secret).publicKey.x963Representation))
     case .ecdsaP521:
       SSHWire.string(&w, Array("nistp521".utf8))
-      SSHWire.string(&w, Array(try P521.Signing.PrivateKey(rawRepresentation: privateBytes).publicKey.x963Representation))
+      SSHWire.string(&w, Array(try P521.Signing.PrivateKey(rawRepresentation: secret).publicKey.x963Representation))
     case .rsa:
-      let (n, e) = try SSHRSA.publicNumbers(pkcs1: privateBytes)
+      var pkcs1 = secret.array
+      defer { SSHSecretBytes.wipe(&pkcs1) }
+      let (n, e) = try SSHRSA.publicNumbers(pkcs1: pkcs1)
       SSHWire.mpint(&w, e)
       SSHWire.mpint(&w, n)
     }
@@ -112,19 +118,26 @@ public struct SSHKey: Sendable {
     if let external { return try external.sign(data) }
     switch kind {
     case .ed25519:
-      return Array(try Curve25519.Signing.PrivateKey(rawRepresentation: privateBytes).signature(for: data))
+      return Array(try Curve25519.Signing.PrivateKey(rawRepresentation: secret).signature(for: data))
     case .ecdsaP256:
-      let raw = try P256.Signing.PrivateKey(rawRepresentation: privateBytes).signature(for: data).rawRepresentation
+      let raw = try P256.Signing.PrivateKey(rawRepresentation: secret).signature(for: data).rawRepresentation
       return Self.ecdsaBlob(Array(raw))
     case .ecdsaP384:
-      let raw = try P384.Signing.PrivateKey(rawRepresentation: privateBytes).signature(for: data).rawRepresentation
+      let raw = try P384.Signing.PrivateKey(rawRepresentation: secret).signature(for: data).rawRepresentation
       return Self.ecdsaBlob(Array(raw))
     case .ecdsaP521:
-      let raw = try P521.Signing.PrivateKey(rawRepresentation: privateBytes).signature(for: data).rawRepresentation
+      let raw = try P521.Signing.PrivateKey(rawRepresentation: secret).signature(for: data).rawRepresentation
       return Self.ecdsaBlob(Array(raw))
     case .rsa:
-      return try SSHRSA.signSHA256(pkcs1: privateBytes, data: data)
+      var pkcs1 = secret.array
+      defer { SSHSecretBytes.wipe(&pkcs1) }
+      return try SSHRSA.signSHA256(pkcs1: pkcs1, data: data)
     }
+  }
+
+  /// The same key: the same public half, and the same private material or none.
+  func isSameKey(as other: SSHKey) -> Bool {
+    secret.matches(other.secret) && (try? publicKeyBlob()) == (try? other.publicKeyBlob())
   }
 
   static func ecdsaBlob(_ raw: [UInt8]) -> [UInt8] {
@@ -180,7 +193,8 @@ public struct SSHKey: Sendable {
       throw ImportError.encrypted
     }
     let body = block.filter { !$0.contains(":") }.joined()
-    guard let der = Data(base64Encoded: body).map({ [UInt8]($0) }) else { throw ImportError.unrecognized }
+    guard var der = Data(base64Encoded: body).map({ [UInt8]($0) }) else { throw ImportError.unrecognized }
+    defer { SSHSecretBytes.wipe(&der) }
     switch begin {
     case "-----BEGIN OPENSSH PRIVATE KEY-----": self = try Self.parseOpenSSH(der)
     case "-----BEGIN RSA PRIVATE KEY-----": self = try SSHKey(kind: .rsa, privateBytes: der)
@@ -294,13 +308,17 @@ public struct SSHKey: Sendable {
     switch type {
     case "ssh-ed25519":
       _ = try SSHWire.readString(&p)
-      let secret = try SSHWire.readString(&p)
+      var secret = try SSHWire.readString(&p)
+      defer { SSHSecretBytes.wipe(&secret) }
       let comment = String(decoding: try SSHWire.readString(&p), as: UTF8.self)
-      return try SSHKey(kind: .ed25519, privateBytes: Array(secret.prefix(32)), comment: comment)
+      var seed = Array(secret.prefix(32))
+      defer { SSHSecretBytes.wipe(&seed) }
+      return try SSHKey(kind: .ed25519, privateBytes: seed, comment: comment)
     case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
       _ = try SSHWire.readString(&p)  // curve
       _ = try SSHWire.readString(&p)  // public point
       var scalar = try SSHWire.readString(&p)
+      defer { SSHSecretBytes.wipe(&scalar) }
       let size = type.hasSuffix("256") ? 32 : type.hasSuffix("384") ? 48 : 66
       while scalar.count > size && scalar.first == 0 { scalar.removeFirst() }
       while scalar.count < size { scalar.insert(0, at: 0) }
@@ -309,12 +327,19 @@ public struct SSHKey: Sendable {
     case "ssh-rsa":
       let n = try SSHWire.readString(&p)
       let e = try SSHWire.readString(&p)
-      let d = try SSHWire.readString(&p)
-      let iqmp = try SSHWire.readString(&p)
-      let prime1 = try SSHWire.readString(&p)
-      let prime2 = try SSHWire.readString(&p)
+      var d = try SSHWire.readString(&p)
+      var iqmp = try SSHWire.readString(&p)
+      var prime1 = try SSHWire.readString(&p)
+      var prime2 = try SSHWire.readString(&p)
       let comment = String(decoding: try SSHWire.readString(&p), as: UTF8.self)
-      let pkcs1 = SSHRSA.pkcs1(n: n, e: e, d: d, p: prime1, q: prime2, qInverse: iqmp)
+      var pkcs1 = SSHRSA.pkcs1(n: n, e: e, d: d, p: prime1, q: prime2, qInverse: iqmp)
+      defer {
+        SSHSecretBytes.wipe(&d)
+        SSHSecretBytes.wipe(&iqmp)
+        SSHSecretBytes.wipe(&prime1)
+        SSHSecretBytes.wipe(&prime2)
+        SSHSecretBytes.wipe(&pkcs1)
+      }
       return try SSHKey(kind: .rsa, privateBytes: pkcs1, comment: comment)
     default:
       throw ImportError.unsupportedType(type)

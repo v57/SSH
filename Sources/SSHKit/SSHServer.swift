@@ -39,9 +39,16 @@ public struct SSHServer: Sendable, Hashable {
 
   public static func == (a: SSHServer, b: SSHServer) -> Bool {
     a.host == b.host && a.fallbackHosts == b.fallbackHosts && a.port == b.port && a.user == b.user && a.password == b.password
-      && a.key?.privateBytes == b.key?.privateBytes
-      && (try? a.key?.publicKeyBlob()) == (try? b.key?.publicKeyBlob()) && a.knownFingerprint == b.knownFingerprint
+      && a.hasSameKey(as: b) && a.knownFingerprint == b.knownFingerprint
       && a.asksAboutUnknownKeys == b.asksAboutUnknownKeys
+  }
+
+  private func hasSameKey(as other: SSHServer) -> Bool {
+    switch (key, other.key) {
+    case (nil, nil): true
+    case (let a?, let b?): a.isSameKey(as: b)
+    default: false
+    }
   }
 
   private var asksAboutUnknownKeys: Bool {
