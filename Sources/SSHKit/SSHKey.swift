@@ -41,6 +41,10 @@ public struct SSHKey: Sendable {
   public struct External: Sendable {
     public let publicKeyBlob: [UInt8]
     public let sign: @Sendable ([UInt8]) throws -> [UInt8]
+    /// Runs just before a login uses the key, once the host's key is settled and the server takes keys, so a key that needs
+    /// the user asks at that moment and the time they take doesn't count against the login. `true`: the login's server is
+    /// `unattended`, so it mustn't ask. Throwing ends the login with that error.
+    public let prepare: (@Sendable (_ unattended: Bool) throws -> Void)?
   }
 
   public init(kind: Kind, privateBytes: [UInt8], comment: String = "") throws {
@@ -53,12 +57,13 @@ public struct SSHKey: Sendable {
 
   /// A key held elsewhere: `publicKeyBlob` in SSH wire format, `sign` producing the signature body.
   public init(
-    kind: Kind, publicKeyBlob: [UInt8], comment: String = "", sign: @escaping @Sendable ([UInt8]) throws -> [UInt8]
+    kind: Kind, publicKeyBlob: [UInt8], comment: String = "", prepare: (@Sendable (_ unattended: Bool) throws -> Void)? = nil,
+    sign: @escaping @Sendable ([UInt8]) throws -> [UInt8]
   ) {
     self.kind = kind
     secret = SSHSecretBytes([])
     self.comment = comment
-    external = External(publicKeyBlob: publicKeyBlob, sign: sign)
+    external = External(publicKeyBlob: publicKeyBlob, sign: sign, prepare: prepare)
   }
 
   /// A new Ed25519 key.

@@ -12,6 +12,9 @@ public struct SSHServer: Sendable, Hashable {
   public var key: SSHKey?
   /// What to do about the server's host key. Required: every login says who it trusts and who decides.
   public var trust: SSHHostTrust
+  /// Nobody started this login just now (a check at launch, a scheduled job): a key that would have to ask the user fails
+  /// the login instead. Not part of the login's identity: `==` and `hash` ignore it.
+  public var unattended = false
 
   public init(
     host: String, fallbackHosts: [String] = [], port: Int = 22, user: String, password: String? = nil,

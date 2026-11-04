@@ -101,7 +101,14 @@ public final class SSHLogin {
     if let methods { methodsText = String(cString: methods) }
     if libssh2_userauth_authenticated(sess) == 1 { return }
 
+    var deadline = deadline
     if let key = server.key, methodsText.isEmpty || methodsText.contains("publickey") {
+      if let prepare = key.external?.prepare {
+        // The deadline moves on too: someone may have just taken their time answering.
+        let started = Date()
+        try prepare(server.unattended)
+        deadline += Date().timeIntervalSince(started)
+      }
       if try authenticateWithKey(sess, key: key, deadline: deadline) { return }
     }
     if let password = server.password, !password.isEmpty {
