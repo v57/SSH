@@ -3,9 +3,13 @@
 `SSHKit`: SSH for the v57 apps, in-process on libssh2 + mbedTLS (macOS 14, iOS 17, Windows).
 
 - `SSHServer`, `SSHKey` (Ed25519, ECDSA, RSA, or a key held elsewhere such as the Secure Enclave, signing through a
-  closure) and `SSHLogin`: one session from the TCP connection to a logged-in user, with the host key decided
-  before anything is sent (`SSHServer.trust`, required: a pinned key, asking someone, or refusing; `SSHKnownHosts`
-  ships GitHub's, GitLab's and Bitbucket's keys), and key, password or keyboard-interactive login.
+  closure; `SSHKey(importing:passphrase:)` opens OpenSSH and PEM keys behind a passphrase with AES; private bytes are
+  overwritten when the last copy of the key goes away) and `SSHLogin`: one session from the TCP connection to a
+  logged-in user, with the host key decided before anything is sent (`SSHServer.trust`, required: a pinned key, asking
+  someone, or refusing; `SSHKnownHosts` ships GitHub's, GitLab's and Bitbucket's keys), and key, password or
+  keyboard-interactive login (the password answers only prompts that ask for it).
+- `SSHAlgorithms`: what every session offers: libssh2's algorithms less SHA-1 key exchange and signatures, CBC and
+  older ciphers, and MD5, RIPEMD-160 and SHA-1 MACs. Strict key exchange (Terrapin) stays on.
 - `SSHCommand`: one command on a pseudo-terminal, its output streamed, its exit status, Stop hanging it up.
 - `SSHConnection`: one login running many commands side by side, each on its own channel without a terminal:
   output and errors apart and byte for byte, input written then closed, the exit status (Git's iOS app runs git
