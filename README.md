@@ -1,6 +1,6 @@
 # SSH
 
-`SSHKit`: SSH for the v57 apps, in-process on libssh2 + mbedTLS (macOS 14, iOS 17, Windows).
+`SSHKit`: SSH for the v57 apps, in-process on libssh2 (macOS 14 and iOS 17 on arm64 only, Linux, Windows).
 
 - `SSHServer`, `SSHKey` (Ed25519, ECDSA, RSA, or a key held elsewhere such as the Secure Enclave, signing through a
   closure; `SSHKey(importing:passphrase:)` opens OpenSSH and PEM keys behind a passphrase with AES; private bytes are
@@ -33,7 +33,9 @@ Database's `SSHTunnel` (database connections over `direct-tcpip` channels) is bu
 
 libssh2 is prebuilt for Apple platforms (`Scripts/build-libssh2.sh`: libssh2 1.11.1 with `Patches/libssh2` on Mbed TLS
 3.6.7, from pinned commits, with an SBOM; published on this repository's GitHub Releases by `Scripts/release-libssh2.sh`
-through Dev's Publish libssh2 workflow; a local `Binary/Libssh2.xcframework` wins) and built from source on Windows (`Sources/CLibssh2`, WinCNG).
+through Dev's Publish libssh2 workflow; a local `Binary/Libssh2.xcframework` wins) and built from source on Linux and Windows (`Sources/CLibssh2`: the system's OpenSSL on Linux, `apt install libssl-dev`;
+WinCNG on Windows). The prebuilt has arm64 slices only (macOS, iOS, iOS simulator), so Intel Macs and x86_64
+simulators can't link it.
 It has no Ed25519 host keys: servers need an ECDSA or RSA host key.
 
 ```bash
