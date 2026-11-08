@@ -73,6 +73,9 @@ public enum SSHTunnelError: Error, LocalizedError, Sendable, Equatable {
   case hostKeyUnverified(host: String, fingerprint: String)
   /// The user said no, or didn't answer in time.
   case hostKeyRejected(host: String, fingerprint: String)
+  /// Nothing is known about this server's key, and one of its other addresses answered: only its own address is asked
+  /// about (security audit M7), since anyone on the network can answer for a `.local` name.
+  case hostKeyFromFallback(host: String, address: String, fingerprint: String)
   /// A server whose keys ship with the app (`SSHKnownHosts`) showed another one.
   case hostKeyNotPublished(host: String, actual: String)
   case authenticationFailed(methods: String)
@@ -89,6 +92,8 @@ public enum SSHTunnelError: Error, LocalizedError, Sendable, Equatable {
       "\(host)'s SSH key hasn't been verified (\(fingerprint)), and this connection has no one to ask. Connect to it once from an app's window and check the key there."
     case .hostKeyRejected(let host, _):
       "The connection to \(host) was cancelled: its SSH key wasn't accepted, so nothing was sent to it."
+    case .hostKeyFromFallback(let host, let address, _):
+      "\(host) didn't answer, and its SSH key hasn't been accepted yet, so its other address \(address) wasn't trusted and nothing was sent to it. Connect once while \(host) itself answers, then the other addresses work too."
     case .hostKeyNotPublished(let host, let actual):
       "The server answering for \(host) showed an SSH key that isn't \(host)'s (\(actual)), so nothing was sent to it. Someone may be intercepting this connection. If \(host) has changed its keys, updating the app brings the new ones."
     case .authenticationFailed(let methods):

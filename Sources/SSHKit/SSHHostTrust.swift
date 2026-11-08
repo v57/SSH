@@ -28,7 +28,7 @@ public enum SSHHostTrust: Sendable {
   /// device signed. Any other key fails with `SSHTunnelError.hostKeyChanged`.
   case pinned(String)
   /// Nothing is known about this server, and someone can answer: `decide` gets the key after the handshake and says
-  /// whether to go on, and remembers the key if it says yes. Waits two minutes at most (servers drop a login after about as long), and no answer is a no.
+  /// whether to go on (only when the server's own address answered, never a fallback), and remembers the key if it says yes. Waits two minutes at most (servers drop a login after about as long), and no answer is a no.
   case ask(@Sendable (SSHHostKey) async -> Bool)
   /// Nothing is known about this server and nobody can answer (a background job, a command-line tool): an unknown key
   /// fails with `SSHTunnelError.hostKeyUnverified`.
@@ -103,6 +103,11 @@ extension SSHServer {
     case .refuseUnknown:
       throw SSHTunnelError.hostKeyUnverified(host: host, fingerprint: key.fingerprint)
     case .ask(let decide):
+      // Only the server's own address is asked about: a fallback (a Bonjour name, a Hub overlay address) is trusted
+      // only with a pin, so nobody on the network can answer for it and be accepted under the host's name (M7).
+      guard key.address.isEmpty || key.address.lowercased() == host.lowercased() else {
+        throw SSHTunnelError.hostKeyFromFallback(host: host, address: key.address, fingerprint: key.fingerprint)
+      }
       guard Self.answer(of: decide, about: key) else {
         throw SSHTunnelError.hostKeyRejected(host: host, fingerprint: key.fingerprint)
       }

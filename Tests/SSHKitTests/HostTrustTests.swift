@@ -31,6 +31,21 @@ struct HostTrustTests {
     #expect(seen.all == ["SHA256:a"])
   }
 
+  /// Security audit M7: with the host unreachable, whoever answers at a fallback (`Mac.local`) isn't asked about, so
+  /// it can't be accepted under the host's name; a pinned key still works there.
+  @Test func aFallbackAddressIsTrustedOnlyWithAPin() throws {
+    let seen = Seen()
+    let ask = SSHHostTrust.ask { seen.add($0.fingerprint); return true }
+    let fromFallback = SSHHostKey(host: "prod.example.com", port: 22, address: "Mac.local", fingerprint: "SHA256:a", type: "ECDSA P-256")
+    #expect(throws: SSHTunnelError.hostKeyFromFallback(host: "prod.example.com", address: "Mac.local", fingerprint: "SHA256:a")) {
+      try server(ask).verify(fromFallback)
+    }
+    #expect(seen.all.isEmpty)
+    try server(.pinned("SHA256:a")).verify(fromFallback)
+    try server(ask).verify(SSHHostKey(host: "prod.example.com", port: 22, address: "PROD.example.com", fingerprint: "SHA256:a", type: "RSA"))
+    #expect(seen.all == ["SHA256:a"])
+  }
+
   @Test func aPinAcceptsOnlyItsOwnKey() throws {
     try server(.pinned("SHA256:a")).verify(key("SHA256:a"))
     #expect(throws: SSHTunnelError.hostKeyChanged(expected: "SHA256:a", actual: "SHA256:b")) {

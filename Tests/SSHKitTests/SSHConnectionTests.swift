@@ -7,10 +7,19 @@ import Testing
 /// nothing listens there.
 @Suite(.serialized, .enabled(if: TestServer.isUp, "needs an sshd on SSH_TEST_PORT (see TestServer)"))
 struct SSHConnectionTests {
+  /// A fallback is trusted only with the host's key pinned (security audit M7): asking about whoever answers there
+  /// would let anyone on the network answer for a `.local` name.
   @Test func triesTheFallbackAddressesWhenTheHostDoesntAnswer() async throws {
+    let first = try await SSHConnection.connect(server: try TestServer.server, timeout: 10)
+    let fingerprint = first.hostKeyFingerprint
+    first.close()
     var server = try TestServer.server
     server.fallbackHosts = [server.host]
     server.host = "unreachable.invalid"
+    await #expect(throws: SSHTunnelError.hostKeyFromFallback(host: "unreachable.invalid", address: "127.0.0.1", fingerprint: fingerprint)) {
+      try await SSHConnection.connect(server: server, timeout: 10).close()
+    }
+    server.trust = .pinned(fingerprint)
     let connection = try await SSHConnection.connect(server: server, timeout: 10)
     defer { connection.close() }
     #expect(connection.connectedHost == "127.0.0.1")
