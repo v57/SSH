@@ -84,20 +84,20 @@ public enum SSHTunnelError: Error, LocalizedError, Sendable, Equatable {
 
   public var errorDescription: String? {
     switch self {
-    case .connectFailed(let detail): "Couldn't reach the SSH server: \(detail)"
+    case .connectFailed(let detail): "Couldn’t reach the SSH server: \(detail)"
     case .handshakeFailed(let detail): "The SSH handshake failed: \(detail)"
     case .hostKeyChanged(let expected, let actual):
-      "The SSH server's identity changed (was \(expected), now \(actual)). If you expected this, forget the saved host key and connect again."
+      "The SSH server’s identity changed (was \(expected), now \(actual)). If you expected this, forget the saved host key and connect again."
     case .hostKeyUnverified(let host, let fingerprint):
-      "\(host)'s SSH key hasn't been verified (\(fingerprint)), and this connection has no one to ask. Connect to it once from an app's window and check the key there."
+      "\(host)’s SSH key hasn’t been verified (\(fingerprint)), and this connection has no one to ask. Connect to it once from an app’s window and check the key there."
     case .hostKeyRejected(let host, _):
-      "The connection to \(host) was cancelled: its SSH key wasn't accepted, so nothing was sent to it."
+      "The connection to \(host) was cancelled: its SSH key wasn’t accepted, so nothing was sent to it."
     case .hostKeyFromFallback(let host, let address, _):
-      "\(host) didn't answer, and its SSH key hasn't been accepted yet, so its other address \(address) wasn't trusted and nothing was sent to it. Connect once while \(host) itself answers, then the other addresses work too."
+      "\(host) didn’t answer, and its SSH key hasn’t been accepted yet, so its other address \(address) wasn’t trusted and nothing was sent to it. Connect once while \(host) itself answers, then the other addresses work too."
     case .hostKeyNotPublished(let host, let actual):
-      "The server answering for \(host) showed an SSH key that isn't \(host)'s (\(actual)), so nothing was sent to it. Someone may be intercepting this connection. If \(host) has changed its keys, updating the app brings the new ones."
+      "The server answering for \(host) showed an SSH key that isn’t \(host)’s (\(actual)), so nothing was sent to it. Someone may be intercepting this connection. If \(host) has changed its keys, updating the app brings the new ones."
     case .authenticationFailed(let methods):
-      "The SSH server didn't accept the key or password." + (methods.isEmpty ? "" : " It allows: \(methods).")
+      "The SSH server didn’t accept the key or password." + (methods.isEmpty ? "" : " It allows: \(methods).")
     case .forwardFailed(let detail): "The SSH server refused the tunnel: \(detail)"
     case .closed: "The SSH tunnel closed."
     }

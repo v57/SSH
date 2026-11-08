@@ -166,12 +166,12 @@ public struct SSHKey: Sendable {
 
     public var errorDescription: String? {
       switch self {
-      case .unrecognized: "This doesn't look like an SSH private key."
+      case .unrecognized: "This doesn’t look like an SSH private key."
       case .needsPassphrase: "This key is protected by a passphrase. Enter it to import the key."
-      case .wrongPassphrase: "That passphrase doesn't open this key."
+      case .wrongPassphrase: "That passphrase doesn’t open this key."
       case .unsupportedEncryption(let name):
-        "This key is protected with \(name), which can't be read here. `ssh-keygen -p -Z aes256-ctr -f <key>` rewrites it in a form that can, keeping a passphrase."
-      case .unsupportedType(let type): "\(type) keys aren't supported. Use an Ed25519, ECDSA or RSA key."
+        "This key is protected with \(name), which can’t be read here. `ssh-keygen -p -Z aes256-ctr -f <key>` rewrites it in a form that can, keeping a passphrase."
+      case .unsupportedType(let type): "\(type) keys aren’t supported. Use an Ed25519, ECDSA or RSA key."
       }
     }
   }
@@ -252,7 +252,7 @@ public struct SSHKey: Sendable {
       case 0xA0:
         let parameters = try DER.element(&inner)
         if kind == nil, parameters.tag == 0x06 {
-          guard let named = DER.curves[parameters.bytes] else { throw ImportError.unsupportedType("This curve's") }
+          guard let named = DER.curves[parameters.bytes] else { throw ImportError.unsupportedType("This curve’s") }
           kind = named
         }
       case 0xA1:
@@ -299,7 +299,7 @@ public struct SSHKey: Sendable {
       // A named curve, or explicit parameters (`ssh-keygen -m PKCS8`): then the key itself tells the curve.
       var curve: Kind?
       if let parameters, parameters.tag == 0x06 {
-        guard let named = DER.curves[parameters.bytes] else { throw ImportError.unsupportedType("This curve's") }
+        guard let named = DER.curves[parameters.bytes] else { throw ImportError.unsupportedType("This curve’s") }
         curve = named
       }
       return try parseSEC1(privateKey.bytes, curve: curve)

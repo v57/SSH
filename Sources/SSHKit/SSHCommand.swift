@@ -77,7 +77,7 @@ public final class SSHCommand: @unchecked Sendable {
         continue
       }
       if count < 0 && Int32(count) != Self.eagain {
-        throw SSHTunnelError.forwardFailed("the command's output broke off (\(login.lastError()))")
+        throw SSHTunnelError.forwardFailed("the command’s output broke off (\(login.lastError()))")
       }
       if libssh2_channel_eof(channel) != 0 { break }
       if Date().timeIntervalSince(lastKeepalive) > 15 {
@@ -110,7 +110,7 @@ public final class SSHCommand: @unchecked Sendable {
         return channel
       }
       guard libssh2_session_last_errno(session) == Self.eagain, Date() < deadline, !isStopped else {
-        throw SSHTunnelError.forwardFailed("the server didn't open a session (\(login.lastError()))")
+        throw SSHTunnelError.forwardFailed("the server didn’t open a session (\(login.lastError()))")
       }
       login.waitSocket()
     }

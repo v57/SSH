@@ -289,7 +289,7 @@ public final class SFTPClient: @unchecked Sendable {
         return
       }
       guard libssh2_session_last_errno(session) == Self.eagain, Date() < deadline else {
-        throw SSHTunnelError.handshakeFailed("the server didn't start SFTP (\(login.lastError()))")
+        throw SSHTunnelError.handshakeFailed("the server didn’t start SFTP (\(login.lastError()))")
       }
       login.waitSocket()
     }

@@ -57,7 +57,7 @@ public final class SSHLogin {
       }
     }
     guard let sess = libssh2_session_init_ex(nil, nil, nil, nil) else {
-      throw SSHTunnelError.handshakeFailed("couldn't start an SSH session")
+      throw SSHTunnelError.handshakeFailed("couldn’t start an SSH session")
     }
     session = sess
     libssh2_session_set_blocking(sess, 0)
@@ -211,7 +211,7 @@ public final class SSHLogin {
 
   static func describe(_ error: SocketError, host: String) -> String {
     switch error {
-    case .hostNotFound: "the host name \(host) couldn't be found"
+    case .hostNotFound: "the host name \(host) couldn’t be found"
     case .timedOut: "timed out"
     case .failed(let code, let message): code == Sockets.connectionRefused ? "connection refused (is SSH on?)" : message
     }

@@ -29,7 +29,7 @@ public final class SSHJump: @unchecked Sendable {
   /// Logs in to `jump` and opens a channel from it to `server`'s SSH port, on a thread of its own.
   public static func open(to server: SSHServer, through jump: SSHServer, timeout: TimeInterval) async throws -> SSHJump {
     #if os(Windows)
-      throw SSHTunnelError.connectFailed("going through a jump host isn't supported on Windows yet")
+      throw SSHTunnelError.connectFailed("going through a jump host isn’t supported on Windows yet")
     #else
       let hop = SSHJump(jump: jump)
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -112,7 +112,7 @@ public final class SSHJump: @unchecked Sendable {
         if index == hosts.count - 1 || Date() >= deadline { break }
       }
       throw SSHTunnelError.connectFailed(
-        "the jump host \(login.server.host) couldn't reach \(hosts.joined(separator: " or ")):\(server.port)")
+        "the jump host \(login.server.host) couldn’t reach \(hosts.joined(separator: " or ")):\(server.port)")
     }
 
     private func makeSocketPair() throws {
@@ -123,7 +123,7 @@ public final class SSHJump: @unchecked Sendable {
         let type = Int32(SOCK_STREAM.rawValue)
       #endif
       guard socketpair(AF_UNIX, type, 0, &ends) == 0 else {
-        throw SSHTunnelError.connectFailed("couldn't make a socket pair (\(Sockets.describe(Sockets.lastError)))")
+        throw SSHTunnelError.connectFailed("couldn’t make a socket pair (\(Sockets.describe(Sockets.lastError)))")
       }
       for end in ends {
         #if canImport(Darwin)

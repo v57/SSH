@@ -277,7 +277,7 @@ public final class SSHConnection: @unchecked Sendable {
           let channel = libssh2_channel_open_ex(session, "session", 7, UInt32(2 * 1024 * 1024), UInt32(32 * 1024), nil, 0)
         else {
           guard libssh2_session_last_errno(session) == Self.eagain else {
-            throw SSHTunnelError.forwardFailed("the server didn't open a session (\(login.lastError()))")
+            throw SSHTunnelError.forwardFailed("the server didn’t open a session (\(login.lastError()))")
           }
           return false
         }
@@ -378,7 +378,7 @@ public final class SSHConnection: @unchecked Sendable {
           continue
         }
         if count < 0 && Int32(count) != Self.eagain {
-          throw SSHTunnelError.forwardFailed("the command's output broke off (\(login.lastError()))")
+          throw SSHTunnelError.forwardFailed("the command’s output broke off (\(login.lastError()))")
         }
         break
       }
