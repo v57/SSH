@@ -171,7 +171,12 @@ public final class SFTPClient: @unchecked Sendable {
     try await perform { try $0.statNow(path, followLinks: followLinks) }
   }
 
-  /// `length` bytes from `offset` (to the end when nil); fewer when the file ends first, none past its end.
+  /// The most a read with no `length` takes: a larger file is refused, so a server can't make the app hold more than
+  /// this whatever size it reports or however long it keeps sending (security audit M8). Read larger files in ranges.
+  public static let wholeFileLimit = 256 * 1024 * 1024
+
+  /// `length` bytes from `offset` (to the end when nil, at most `wholeFileLimit`); fewer when the file ends first, none
+  /// past its end.
   public func read(_ path: String, offset: UInt64 = 0, length: Int? = nil) async throws -> Data {
     try await perform { try $0.readNow(path, offset: offset, length: length) }
   }
@@ -472,6 +477,12 @@ public final class SFTPClient: @unchecked Sendable {
     return entries.sorted { $0.name < $1.name }
   }
 
+  private static func tooLarge(_ path: String) -> SFTPError {
+    .failed(
+      path: path, status: UInt(LIBSSH2_FX_FAILURE),
+      message: "The file is larger than \(wholeFileLimit / 1024 / 1024) MB; read it in ranges")
+  }
+
   fileprivate func readNow(_ path: String, offset: UInt64, length: Int?) throws -> Data {
     let sftp = try session
     let file = try handle(path) {
@@ -484,9 +495,13 @@ public final class SFTPClient: @unchecked Sendable {
       let info = Self.info(path: path, attributes)
       if info.isDirectory { throw SFTPError.isADirectory(path) }
       let available = info.size > offset ? Int(clamping: info.size - offset) : 0
-      var remaining = length ?? Int.max
-      if remaining > 0, attributes.flags & CUnsignedLong(LIBSSH2_SFTP_ATTR_SIZE) != 0 {
-        result.reserveCapacity(min(remaining, available))
+      let sized = attributes.flags & CUnsignedLong(LIBSSH2_SFTP_ATTR_SIZE) != 0
+      // With no length, one byte past the limit is read, so a file that grows or lies about its size is refused too.
+      if length == nil, sized, available > Self.wholeFileLimit { throw Self.tooLarge(path) }
+      var remaining = length ?? (Self.wholeFileLimit + 1)
+      if remaining > 0, sized {
+        // The server's size is a hint: never reserve more than a few chunks on its word.
+        result.reserveCapacity(min(remaining, available, 4 * Self.chunk))
       }
       libssh2_sftp_seek64(file, offset)
       var buffer = [CChar](repeating: 0, count: Self.chunk)
@@ -497,6 +512,7 @@ public final class SFTPClient: @unchecked Sendable {
         buffer.withUnsafeBytes { result.append($0.bindMemory(to: UInt8.self).baseAddress!, count: n) }
         remaining -= n
       }
+      if length == nil, result.count > Self.wholeFileLimit { throw Self.tooLarge(path) }
     } catch {
       try? closeHandle(file, path: path)
       throw error

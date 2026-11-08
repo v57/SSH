@@ -87,6 +87,21 @@ struct SFTPClientTests {
     try await cleanUp(client)
   }
 
+  /// Security audit M8: a file the server reports as huge is refused, not allocated (a sparse 1 TB file here).
+  @Test func refusesAHugeWholeFileRead() async throws {
+    let client = try await connect()
+    let path = "\(root)/huge.bin"
+    try await client.write(Data("x".utf8), to: path)
+    let status = try await SSHCommand(server: try TestServer.server, command: "truncate -s 1T '\(path)'").run(timeout: 20) { _ in }
+    try #require(status == 0)
+    #expect(try await client.stat(path)?.size == 1 << 40)
+    await #expect(throws: SFTPError.self) { try await client.read(path) }
+    // A range of it still reads.
+    #expect(try await client.read(path, offset: 1 << 39, length: 4096) == Data(count: 4096))
+    try await client.removeFile(path)
+    try await cleanUp(client)
+  }
+
   @Test func atomicWritesKeepPermissions() async throws {
     let client = try await connect()
     let path = "\(root)/script.sh"
