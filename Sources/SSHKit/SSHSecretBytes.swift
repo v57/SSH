@@ -43,7 +43,7 @@ final class SSHSecretBytes: @unchecked Sendable, ContiguousBytes {
     #if canImport(Darwin)
       _ = memset_s(base, buffer.count, 0, buffer.count)
     #elseif os(Windows)
-      _ = RtlSecureZeroMemory(base, buffer.count)
+      _ = RtlSecureZeroMemory(base, SIZE_T(buffer.count))
     #else
       explicit_bzero(base, buffer.count)
     #endif
