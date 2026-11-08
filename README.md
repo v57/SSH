@@ -22,6 +22,15 @@
 
 Database's `SSHTunnel` (database connections over `direct-tcpip` channels) is built on it.
 
+## Libraries
+
+| Library | Purpose | Platforms | Import |
+|---|---|---|---|
+| [SSHKit](docs/SSHKit.md) | Logins with host-key trust, keys, commands, SFTP, jump hosts, the socket layer | macOS 14, iOS 17, Linux, Windows (no jump hosts yet) | `import SSHKit` |
+| [Libssh2](docs/Libssh2.md) | libssh2 1.11.1 with security patches, for apps that drive their own sessions; how the prebuilt is made | macOS 14, iOS 17 (prebuilt, arm64), Linux, Windows (from source) | `import CLibssh2` |
+
+`.package(url: "https://github.com/v57/SSH.git", branch: "main")`, then `.product(name: "SSHKit", package: "SSH")`.
+
 libssh2 is prebuilt for Apple platforms (`Scripts/build-libssh2.sh`: libssh2 1.11.1 with `Patches/libssh2` on Mbed TLS
 3.6.7, from pinned commits, with an SBOM; published on this repository's GitHub Releases by `Scripts/release-libssh2.sh`
 through Dev's Publish libssh2 workflow; a local `Binary/Libssh2.xcframework` wins) and built from source on Windows (`Sources/CLibssh2`, WinCNG).
