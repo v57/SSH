@@ -5,16 +5,17 @@ import PackageDescription
 
 let concurrency: [SwiftSetting] = [.enableUpcomingFeature("ApproachableConcurrency")]
 
-// libssh2 + mbedTLS (module CLibssh2), prebuilt by Database's Scripts/build-libssh2.sh and published on Shell's
-// GitHub Releases. Binary/Libssh2.xcframework (not in git) is used instead when it's there.
+// libssh2 (with Patches/libssh2) + Mbed TLS (module CLibssh2), prebuilt by Scripts/build-libssh2.sh and published on
+// this repository's GitHub Releases by Scripts/release-libssh2.sh through Dev. Binary/Libssh2.xcframework (not in git)
+// is used instead when it's there: the local build, before its release is published.
 let libssh2: Target = {
   let path = "Binary/Libssh2.xcframework"
   return FileManager.default.fileExists(atPath: Context.packageDirectory + "/" + path)
     ? .binaryTarget(name: "Libssh2", path: path)
     : .binaryTarget(
       name: "Libssh2",
-      url: "https://github.com/v57/Shell/releases/download/libssh2-1.11.1/Libssh2.xcframework.zip",
-      checksum: "b855ccebd64a0434cb1d59b1c1376676682a3fc48fde829b837881307abcea98")
+      url: "https://github.com/v57/SSH/releases/download/libssh2-1.11.1-p3/Libssh2.xcframework.zip",
+      checksum: "fe1aa16918c01dd86bc52e14ccc20a4ba9cfeb7f1d5af118d29f131f0886d981")
 }()
 
 let package = Package(

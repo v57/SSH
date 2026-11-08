@@ -1,0 +1,17 @@
+{
+  "continueOnFailure" : false,
+  "name" : "Publish libssh2",
+  "steps" : [
+    {
+      "command" : "Scripts/release-libssh2.sh",
+      "id" : "release",
+      "kind" : "command",
+      "name" : "Pack and publish Binary/Libssh2.xcframework",
+      "parallel" : false,
+      "runner" : "mac"
+    }
+  ],
+  "trigger" : {
+
+  }
+}
