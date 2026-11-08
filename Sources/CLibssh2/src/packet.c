@@ -854,7 +854,8 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
                 buf.len = datalen;
                 buf.dataptr += 1; /* advance past type */
 
-                if(_libssh2_get_u32(&buf, &nr_extensions) != 0) {
+                if(_libssh2_get_u32(&buf, &nr_extensions) != 0 ||
+                                    nr_extensions >= 1024) {
                     rc = _libssh2_error(session, LIBSSH2_ERROR_PROTO,
                                         "Invalid extension info received");
                 }
@@ -868,8 +869,10 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
 
                     nr_extensions -= 1;
 
-                    _libssh2_get_string(&buf, &name, &name_len);
-                    _libssh2_get_string(&buf, &value, &value_len);
+                    if(_libssh2_get_string(&buf, &name, &name_len))
+                        break;
+                    if(_libssh2_get_string(&buf, &value, &value_len))
+                        break;
 
                     if(name && value) {
                         _libssh2_debug((session,

@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: v57 <v57a@icloud.com>
+Date: Sun, 8 Nov 2026 11:22:04 +0300
+Subject: [PATCH 2/3] packet: EXT_INFO stops at a bad entry and takes at most
+ 1023 extensions (CVE-2026-55199)
+
+Backport to libssh2 1.11.1 of upstream 17626857d20b3c9a1addfa45979dadcee1cd84a4 (check _libssh2_get_string()
+return in EXT_INFO handler) and the extension-count cap of fe907ca47a8a00ae4698a70f08eb0bda2e5a0aba (#1825).
+---
+ src/packet.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/packet.c b/src/packet.c
+index 6da14e9f..3825e12d 100644
+--- a/src/packet.c
++++ b/src/packet.c
+@@ -854,7 +854,8 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
+                 buf.len = datalen;
+                 buf.dataptr += 1; /* advance past type */
+ 
+-                if(_libssh2_get_u32(&buf, &nr_extensions) != 0) {
++                if(_libssh2_get_u32(&buf, &nr_extensions) != 0 ||
++                                    nr_extensions >= 1024) {
+                     rc = _libssh2_error(session, LIBSSH2_ERROR_PROTO,
+                                         "Invalid extension info received");
+                 }
+@@ -868,8 +869,10 @@ _libssh2_packet_add(LIBSSH2_SESSION * session, unsigned char *data,
+ 
+                     nr_extensions -= 1;
+ 
+-                    _libssh2_get_string(&buf, &name, &name_len);
+-                    _libssh2_get_string(&buf, &value, &value_len);
++                    if(_libssh2_get_string(&buf, &name, &name_len))
++                        break;
++                    if(_libssh2_get_string(&buf, &value, &value_len))
++                        break;
+ 
+                     if(name && value) {
+                         _libssh2_debug((session,
