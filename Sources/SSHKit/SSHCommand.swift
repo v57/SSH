@@ -5,10 +5,12 @@ import Foundation
 /// like `SSHTunnel` and `SFTPClient` (`SSHLogin`: host key check, key or password), on its own session and thread.
 ///
 /// The command runs on a pseudo-terminal, so programs flush their output line by line and show progress, and closing
-/// the channel (Stop) hangs it up. Standard error arrives mixed into the output, as on a terminal.
+/// the channel (Stop) hangs it up. Standard error arrives mixed into the output, as on a terminal. Without `terminal`
+/// (Windows' sshd sends nothing back from a command on one) it runs on plain pipes, standard error still mixed in.
 public final class SSHCommand: @unchecked Sendable {
   public let server: SSHServer
   public let command: String
+  public let terminal: Bool
   public private(set) var hostKeyFingerprint = ""
 
   private let lock = NSLock()
@@ -17,9 +19,10 @@ public final class SSHCommand: @unchecked Sendable {
 
   private static let eagain = Int32(LIBSSH2_ERROR_EAGAIN)
 
-  public init(server: SSHServer, command: String) {
+  public init(server: SSHServer, command: String, terminal: Bool = true) {
     self.server = server
     self.command = command
+    self.terminal = terminal
     login = SSHLogin(server: server, jump: nil)
   }
 
@@ -61,8 +64,12 @@ public final class SSHCommand: @unchecked Sendable {
       _ = drain { libssh2_channel_close(channel) }
       libssh2_channel_free(channel)
     }
-    try request("a terminal", deadline) {
-      libssh2_channel_request_pty_ex(channel, "xterm", 5, nil, 0, 400, 50, 0, 0)
+    if terminal {
+      try request("a terminal", deadline) {
+        libssh2_channel_request_pty_ex(channel, "xterm", 5, nil, 0, 400, 50, 0, 0)
+      }
+    } else {
+      libssh2_channel_handle_extended_data2(channel, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE)
     }
     try request("the command", deadline) {
       libssh2_channel_process_startup(channel, "exec", 4, command, UInt32(command.utf8.count))
