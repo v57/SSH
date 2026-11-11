@@ -61,6 +61,17 @@ public enum SocketError: Error, Sendable, Equatable {
     if case .failed(let code, _) = self { return code == Sockets.connectionRefused }
     return false
   }
+
+  /// No route to the host, or no network: what a first dial on the local network often gets right after the app
+  /// comes to the front or the Local Network prompt is answered, while the network path isn't ready yet.
+  public var isUnreachable: Bool {
+    guard case .failed(let code, _) = self else { return false }
+    #if os(Windows)
+      return code == Int32(WSAEHOSTUNREACH) || code == Int32(WSAENETUNREACH)
+    #else
+      return code == EHOSTUNREACH || code == ENETUNREACH
+    #endif
+  }
 }
 
 /// TCP sockets polled together with libssh2 and `PollWaker`, with BSD sockets or Winsock. Sockets are
@@ -230,9 +241,26 @@ public enum Sockets {
     #endif
   }
 
-  /// A TCP connection to `host`, non-blocking once connected.
+  /// A TCP connection to `host`, non-blocking once connected. A dial that finds no route to the host is tried once
+  /// more after a short wait, when the timeout leaves room: on iOS the first dial on the local network after the app
+  /// comes to the front (or the Local Network prompt is answered) often fails so while the path isn't ready, and the
+  /// same dial a moment later connects (Code C-011, Database D-023).
   public static func connect(
     host: String, port: Int, timeout: TimeInterval, keepAlive: KeepAlive? = nil
+  ) throws(SocketError) -> SocketHandle {
+    do {
+      return try connectOnce(host: host, port: port, timeout: timeout, keepAlive: keepAlive)
+    } catch where error.isUnreachable && timeout > unreachableRetryDelay * 2 {
+      Thread.sleep(forTimeInterval: unreachableRetryDelay)
+      return try connectOnce(host: host, port: port, timeout: timeout - unreachableRetryDelay, keepAlive: keepAlive)
+    }
+  }
+
+  /// How long `connect` waits before dialing again an address it found no route to.
+  static let unreachableRetryDelay: TimeInterval = 1.5
+
+  private static func connectOnce(
+    host: String, port: Int, timeout: TimeInterval, keepAlive: KeepAlive?
   ) throws(SocketError) -> SocketHandle {
     startup()
     var hints = addrinfo()
