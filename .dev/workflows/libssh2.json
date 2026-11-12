@@ -1,5 +1,6 @@
 {
   "continueOnFailure" : false,
+  "id" : "libssh2",
   "name" : "Publish libssh2",
   "steps" : [
     {
@@ -11,7 +12,5 @@
       "runner" : "mac"
     }
   ],
-  "trigger" : {
-
-  }
+  "trigger" : {}
 }
