@@ -12,6 +12,16 @@ terminals do this.
 
 It is not a separate copy per app: SSHKit links the same target, and Database's `Libssh2` product re-exports this one.
 
+## Platforms
+
+<!-- platforms: macos ios linux windows android=planned -->
+
+- **macOS, iOS / iPadOS**: the prebuilt xcframework, arm64 only. Its Mbed TLS backend has no Ed25519 host keys:
+  servers need an ECDSA or RSA host key.
+- **Linux**: built from source with OpenSSL; tested on Ubuntu 24.04.
+- **Windows**: built from source with WinCNG; tested on a Windows VM against an OpenSSH sshd.
+- **Android**: not yet.
+
 ## Getting started
 
 ```swift
@@ -54,7 +64,8 @@ handshake and check the host key with `SSHServer.verify(_:)` before authenticati
 - The module map exports `libssh2.h` and `libssh2_sftp.h` on every platform, and `libssh2_publickey.h` where libssh2
   builds from source (Linux, Windows).
 - The patches in `Patches/libssh2` are backports of upstream fixes for three server-side bugs:
-  - `0001`: a chacha20-poly1305 packet length past 35000 bytes is refused before it overflows (CVE-2026-55200).
+  - `0001`: a chacha20-poly1305 packet whose length is over libssh2's payload limit (`LIBSSH2_PACKET_MAXPAYLOAD`,
+    40,000 bytes) is refused before its length check can overflow (CVE-2026-55200).
   - `0002`: `EXT_INFO` stops at a bad entry and takes at most 1023 extensions (CVE-2026-55199).
   - `0003`: `sftp_symlink` reads its reply through a bounds-checked buffer (CVE-2025-15661).
 
@@ -104,14 +115,6 @@ applied. On Linux and Windows `Package.swift` replaces the binary target with th
 A new patch goes into `Patches/libssh2` and is applied to `Sources/CLibssh2` too
 (`patch -p1 -d Sources/CLibssh2 < Patches/libssh2/<patch>`), then the xcframework is rebuilt and released.
 
-## Platform notes
-
-- **macOS, iOS / iPadOS**: the prebuilt xcframework, arm64 only. Its Mbed TLS backend has no Ed25519 host keys:
-  servers need an ECDSA or RSA host key.
-- **Linux**: built from source with OpenSSL; tested on Ubuntu 24.04.
-- **Windows**: built from source with WinCNG; tested on a Windows VM against an OpenSSH sshd.
-- **Android**: not yet.
-
 ## Testing
 
 libssh2 has no tests of its own here. SSHKit's suites exercise it (see [SSHKit's testing section](SSHKit.md#testing)),
@@ -121,3 +124,8 @@ platforms without an sshd:
 ```bash
 swift test --filter HostileServerTests
 ```
+
+## Related
+
+- [SSHKit](SSHKit.md): logins, commands, SFTP and jump hosts on this library, and the socket layer for your own
+  sessions.

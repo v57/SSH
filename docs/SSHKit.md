@@ -15,6 +15,23 @@ It is not a terminal emulator, an SSH server, or a port forwarder: Database's `S
 `Libssh2` product with `SSHKit`'s socket layer. It has no ssh-agent support and doesn't read `~/.ssh/config` or
 `~/.ssh/known_hosts`: the app keeps keys and known host keys itself and passes them in.
 
+## Platforms
+
+<!-- platforms: macos ios linux windows=partial android=planned -->
+
+- **macOS** (14+) and **iOS / iPadOS** (17+): supported. libssh2 is the prebuilt `Libssh2.xcframework` (arm64 slices
+  only: Apple silicon Macs, iOS devices, the arm64 simulator). Keys sign with CryptoKit and Security.
+- **Linux**: builds and passes the test suite on Ubuntu 24.04 against a user-level sshd. libssh2 builds from
+  `Sources/CLibssh2` with the system's OpenSSL (`apt install libssl-dev`); CryptoKit comes from v57/SwiftUI's
+  stand-in and RSA from swift-crypto.
+- **Windows**: builds; the login, command, SFTP and host-trust suites pass against an OpenSSH sshd on a Windows VM.
+  libssh2 builds from source with WinCNG (ECDSA key exchange included, which OpenSSH 10 servers need). Jump hosts are
+  not supported yet: `SSHJump.open` throws `connectFailed`.
+- **Android**: not yet. `Package.swift` has no Android section.
+
+On Linux and Windows the package depends on [v57/SwiftUI](https://github.com/v57/SwiftUI) and swift-crypto. Set
+`V57_LOCAL=1` to build against a `../SwiftUI` checkout next to this one instead of GitHub's `main`.
+
 ## Getting started
 
 ```swift
@@ -55,9 +72,11 @@ func uptime(savedFingerprint: String?, keyText: String) async throws -> String {
 ### Servers and host-key trust
 
 - `SSHServer(host:fallbackHosts:port:user:password:key:trust:)`: where and how to log in. `port` defaults to 22.
-  `fallbackHosts` are other addresses of the same machine, tried in order when `host` doesn't answer.
-  `unattended` (default `false`) says nobody started this login just now, so a key that would ask the user fails
-  instead.
+  `fallbackHosts` are other addresses of the same machine, tried in order when `host` doesn't answer (`hosts` lists
+  them all, `host` first). `unattended` (default `false`) says nobody started this login just now, so a key that
+  would ask the user fails instead. `knownFingerprint` is the pinned key, if `trust` is `.pinned`.
+- A dial that finds no route to the host (or no network) is tried once more 1.5 s later, when the timeout leaves
+  room: on iOS the first dial on the local network after the app comes to the front often fails that way.
 - `SSHHostTrust`: required on every `SSHServer`.
   - `.pinned("SHA256:…")`: only this key. Any other fails with `SSHTunnelError.hostKeyChanged`.
   - `.ask { (SSHHostKey) async -> Bool in … }`: nothing is known and someone can answer. The closure gets the key
@@ -120,9 +139,18 @@ How a login authenticates (`SSHServer.key` and `SSHServer.password`):
     `finishWriting()`, `read()` (the next piece of standard output, nil at the end), `finished()` (standard error and
     the exit status) and `close()`. A reader that falls behind holds the command back.
   - `isAlive`, `onClosed(_:)`, `close()`, `hostKeyFingerprint`, `connectedHost`.
-- `SSHCommand(server:command:)`: one command on a pseudo-terminal, as `ssh host command` runs it. Programs flush line
-  by line and show progress; standard error arrives mixed into the output. `run(timeout:onOutput:)` returns the exit
-  status, and `stop()` hangs the command up.
+- `SSHCommand(server:command:terminal:)`: one command on a pseudo-terminal, as `ssh host command` runs it. Programs
+  flush line by line and show progress; standard error arrives mixed into the output. `run(timeout:onOutput:)`
+  returns the exit status (nil when the server sent none), and `stop()` hangs the command up. `terminal: false` runs
+  it on plain pipes, standard error still mixed in, for Windows' sshd, which sends nothing back from a command on a
+  pseudo-terminal.
+
+```swift
+let command = SSHCommand(server: server, command: "swift build")
+let status = try await command.run(timeout: 20) { chunk in
+  print(String(decoding: chunk, as: UTF8.self), terminator: "")
+}
+```
 
 Use `SSHConnection` for programs whose output you parse, and `SSHCommand` for output a person reads.
 
@@ -134,6 +162,15 @@ Use `SSHConnection` for programs whose output you parse, and `SSHCommand` for ou
   nothing is there), `read(_:offset:length:)`, `write(_:to:atomic:createParents:permissions:)`,
   `createDirectory(_:intermediate:permissions:)`, `rename(_:to:replacing:)`, `removeFile(_:)`,
   `removeDirectory(_:)`.
+```swift
+let sftp = try await SFTPClient.connect(server: server)
+defer { sftp.close() }
+for file in try await sftp.list("/var/log") where !file.isDirectory {
+  print(file.name, file.size)
+}
+try await sftp.write(Data("hello\n".utf8), to: "notes/hello.txt", createParents: true)
+```
+
 - `write` is atomic by default: it writes a temporary file next to the target and renames it over, keeping a replaced
   file's permissions. It falls back to writing in place when the folder can't take a new file.
 - `read` without a `length` takes at most `SFTPClient.wholeFileLimit` (256 MB) and refuses a larger file, whatever
@@ -148,7 +185,13 @@ Pass the jump host's `SSHServer` as `through:` to `SSHConnection.connect` or `SF
 the server each have their own `trust`. The bytes cross a socket pair inside the process; nothing listens on a port.
 `SFTPClient.jumpHostKeyFingerprint` is the jump host's key.
 
-For your own sessions: `SSHJump.open(to:through:timeout:)`, then `SSHLogin(server:jump:)`.
+```swift
+let bastion = SSHServer(host: "bastion.example.com", user: "me", key: key, trust: .pinned(bastionFingerprint))
+let connection = try await SSHConnection.connect(server: server, through: bastion)
+```
+
+For your own sessions: `SSHJump.open(to:through:timeout:)`, then `SSHLogin(server:jump:)`, which takes the jump's
+socket (`takeSocket()`) and closes the jump when it's torn down. Jump hosts aren't supported on Windows yet.
 
 ### Lower level
 
@@ -175,21 +218,6 @@ For your own sessions: `SSHJump.open(to:through:timeout:)`, then `SSHLogin(serve
 - The server needs an ECDSA or RSA host key. The prebuilt libssh2 on Apple platforms (Mbed TLS) has no Ed25519 host
   keys.
 - The server must offer at least one key exchange, cipher and MAC that `SSHAlgorithms` keeps. Current OpenSSH does.
-
-## Platform notes
-
-- **macOS** (14+) and **iOS / iPadOS** (17+): supported. libssh2 is the prebuilt `Libssh2.xcframework` (arm64 slices
-  only: Apple silicon Macs, iOS devices, the arm64 simulator). Keys sign with CryptoKit and Security.
-- **Linux**: builds and passes the test suite on Ubuntu 24.04 against a user-level sshd. libssh2 builds from
-  `Sources/CLibssh2` with the system's OpenSSL (`apt install libssl-dev`); CryptoKit comes from v57/SwiftUI's
-  stand-in and RSA from swift-crypto.
-- **Windows**: builds; the login, command, SFTP and host-trust suites pass against an OpenSSH sshd on a Windows VM.
-  libssh2 builds from source with WinCNG (ECDSA key exchange included, which OpenSSH 10 servers need). Jump hosts are
-  not supported yet: `SSHJump.open` throws `connectFailed`.
-- **Android**: not yet. `Package.swift` has no Android section.
-
-On Linux and Windows the package depends on [v57/SwiftUI](https://github.com/v57/SwiftUI) and swift-crypto. Set
-`V57_LOCAL=1` to build against a `../SwiftUI` checkout next to this one instead of GitHub's `main`.
 
 ## Testing
 
@@ -236,3 +264,11 @@ swift test --filter SFTPClientTests     # one suite
 
 On Linux, add `V57_LOCAL=1` to test against the checkouts next to this one. The library has no fakes for apps; tests
 of app code that logs in need a real sshd as above.
+
+## Related
+
+- [Libssh2](Libssh2.md): the C library underneath, for apps that run their own libssh2 sessions.
+- Database's [SSHTunnel](https://github.com/v57/Database/blob/main/docs/SSHTunnel.md): database connections over
+  SSH channels, built on SSHKit.
+- Vault's [VaultKit](https://github.com/v57/Vault/blob/main/docs/VaultKit.md): where the v57 apps keep SSH hosts,
+  device keys and accepted host keys before passing them to SSHKit.
